@@ -1,0 +1,13 @@
+node_modules
+dist
+.next
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Prisma
+apps/api/prisma/migrations
+
+# Docker volumes are not in git anyway, but keep noise out
+*.log

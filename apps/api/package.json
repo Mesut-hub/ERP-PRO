@@ -1,0 +1,42 @@
+{
+  "name": "@erp-pro/api",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "prisma:seed": "ts-node-dev --transpile-only prisma/seed.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@nestjs/common": "^11.1.10",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.1.10",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.1.10",
+    "@prisma/client": "^6.19.1",
+    "bcryptjs": "^3.0.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.3",
+    "cookie-parser": "^1.4.7",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/node": "^25.0.3",
+    "@types/passport-jwt": "^4.0.1",
+    "prisma": "^6.19.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  }
+}

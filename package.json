@@ -1,0 +1,27 @@
+{
+  "name": "erp-pro",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "packageManager": "npm@10.8.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -ws --if-present",
+    "build": "npm run build -ws --if-present",
+    "lint": "npm run lint -ws --if-present",
+    "format": "prettier -w .",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

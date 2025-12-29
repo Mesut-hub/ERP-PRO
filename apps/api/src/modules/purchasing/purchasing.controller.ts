@@ -1,0 +1,58 @@
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
+import { RequirePermissions } from '../../common/decorators/require-permissions.decorator';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { JwtAccessPayload } from '../../common/types/auth.types';
+import { PurchasingService } from './purchasing.service';
+import { CreatePoDto } from './dto/create-po.dto';
+import { ReceivePoDto } from './dto/receive-po.dto';
+import { CreateSupplierInvoiceDto } from './dto/create-supplier-invoice.dto';
+
+@Controller('pur')
+@UseGuards(AuthGuard('jwt'), PermissionsGuard)
+export class PurchasingController {
+  constructor(private readonly service: PurchasingService) {}
+
+  @Get('pos')
+  @RequirePermissions('pur.po.read')
+  listPOs() {
+    return this.service.listPOs();
+  }
+
+  @Post('pos')
+  @RequirePermissions('pur.po.manage')
+  createPO(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreatePoDto) {
+    return this.service.createPO(actor.sub, dto);
+  }
+
+  @Post('pos/:id/approve')
+  @RequirePermissions('pur.po.approve')
+  approvePO(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string) {
+    return this.service.approvePO(actor.sub, id);
+  }
+
+  @Post('pos/:id/receive')
+  @RequirePermissions('pur.po.receive')
+  receivePO(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ReceivePoDto) {
+    return this.service.receivePO(actor, id, dto);
+  }
+
+  @Get('invoices')
+  @RequirePermissions('pur.invoice.read')
+  listInvoices() {
+    return this.service.listSupplierInvoices();
+  }
+
+  @Post('invoices')
+  @RequirePermissions('pur.invoice.manage')
+  createInvoice(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreateSupplierInvoiceDto) {
+    return this.service.createSupplierInvoice(actor.sub, dto);
+  }
+
+  @Post('invoices/:id/post')
+  @RequirePermissions('pur.invoice.post')
+  postInvoice(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string) {
+    return this.service.postSupplierInvoice(actor, id);
+  }
+}
