@@ -1,6 +1,4 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
 import {
   AuditAction,
   PartyType,
@@ -8,20 +6,12 @@ import {
   PaymentMethod,
   PaymentStatus,
 } from '@prisma/client';
-import { formatPayNo } from './docno';
 import { JwtAccessPayload } from '../../common/types/auth.types';
+import { AuditService } from '../audit/audit.service';
+import { AccountingService } from '../accounting/accounting.service';
+import { DocNoService } from '../common/sequence/docno.service';
 import { PostingLockService } from '../finance/posting-lock.service';
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class PaymentsService {
@@ -29,17 +19,12 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly postingLock: PostingLockService,
+    private readonly docNo: DocNoService,
+    private readonly accounting: AccountingService,
   ) {}
 
   private has(actor: JwtAccessPayload, perm: string) {
     return (actor.permissions ?? []).includes(perm);
-  }
-
-  private async nextPayNo(date: Date) {
-    const count = await this.prisma.payment.count({
-      where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } },
-    });
-    return formatPayNo(date, count + 1);
   }
 
   list() {
@@ -127,9 +112,6 @@ export class PaymentsService {
     }
 
     // Allocation validation:
-    // - invoice belongs to party
-    // - invoice status must be POSTED unless admin override
-    // - allocation amount must be <= invoice open amount
     const allowDraftAlloc = this.has(actor, 'pay.allocation.draft.override');
 
     if (dto.allocations?.length) {
@@ -143,7 +125,8 @@ export class PaymentsService {
             throw new ForbiddenException('Allocations to DRAFT customer invoices require admin override permission');
           }
 
-          if (Number(a.amount) > open + 0.005 && inv.status === 'POSTED') {
+          // Only enforce open-amount rule for POSTED invoices (draft can change)
+          if (inv.status === 'POSTED' && Number(a.amount) > open + 0.005) {
             throw new BadRequestException(`Allocation exceeds open amount for invoice ${inv.documentNo}`);
           }
         }
@@ -157,7 +140,7 @@ export class PaymentsService {
             throw new ForbiddenException('Allocations to DRAFT supplier invoices require admin override permission');
           }
 
-          if (Number(a.amount) > open + 0.005 && inv.status === 'POSTED') {
+          if (inv.status === 'POSTED' && Number(a.amount) > open + 0.005) {
             throw new BadRequestException(`Allocation exceeds open amount for invoice ${inv.documentNo}`);
           }
         }
@@ -165,7 +148,7 @@ export class PaymentsService {
     }
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
-    const docNo = await this.nextPayNo(docDate);
+    const docNo = await this.docNo.allocate('PAY', docDate);
 
     const created = await this.prisma.payment.create({
       data: {
@@ -205,7 +188,7 @@ export class PaymentsService {
     return created;
   }
 
-  async post(actor: JwtAccessPayload, id: string) {
+  async post(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const pay = await this.prisma.payment.findUnique({
       where: { id },
       include: { party: true, allocations: true },
@@ -213,7 +196,8 @@ export class PaymentsService {
     if (!pay) throw new NotFoundException('Payment not found');
     if (pay.status !== PaymentStatus.DRAFT) throw new BadRequestException('Only DRAFT payments can be posted');
 
-    await this.postingLock.assertPostingAllowed(actor, pay.documentDate, `Payments.post paymentId=${pay.id}`);
+    await this.postingLock.assertPostingAllowed(actor, pay.documentDate, `Payments.post paymentId=${pay.id}`, overrideReason);
+
     // Allocations must sum to amount (if allocations exist)
     if (pay.allocations.length) {
       const sumAlloc = pay.allocations.reduce((s, a) => s + Number(a.amount), 0);
@@ -222,9 +206,7 @@ export class PaymentsService {
       }
     }
 
-    // If allocations exist, enforce invoice status:
-    // - default: only POSTED invoices can be referenced by a POSTED payment
-    // - admin exception: requires pay.post.draft_allocations.override
+    // Enforce invoice status on POST:
     if (pay.allocations.length) {
       const allowDraftOnPost = this.has(actor, 'pay.post.draft_allocations.override');
 
@@ -264,6 +246,7 @@ export class PaymentsService {
     const journalLines: any[] = [];
 
     if (pay.direction === PaymentDirection.IN) {
+      // Debit Cash/Bank, Credit AR
       journalLines.push({
         accountId: assetAccountId,
         partyId: pay.partyId,
@@ -283,6 +266,7 @@ export class PaymentsService {
         amountCurrency: amount.toFixed(2),
       });
     } else {
+      // Debit AP, Credit Cash/Bank
       journalLines.push({
         accountId: accAP.id,
         partyId: pay.partyId,
@@ -308,7 +292,8 @@ export class PaymentsService {
     const credit = journalLines.reduce((s, l) => s + Number(l.credit), 0);
     if (Math.abs(debit - credit) > 0.005) throw new BadRequestException('Payment journal not balanced');
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    // Transaction: mark payment posted then create JE via AccountingService (which uses DocumentSequence)
+    const result = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.payment.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('Payment not found');
       if (locked.status !== PaymentStatus.DRAFT) throw new BadRequestException('Already posted/canceled');
@@ -318,31 +303,17 @@ export class PaymentsService {
         data: { status: PaymentStatus.POSTED, postedAt: new Date(), postedById: actor.sub },
       });
 
-      // Create JE POSTED (same numbering approach as earlier; we’ll centralize later)
-      const jeDate = new Date();
-      const count = await tx.journalEntry.count({
-        where: { documentDate: { gte: startOfDay(jeDate), lte: endOfDay(jeDate) } },
-      });
-      const jeNo = `JE-${jeDate.getFullYear()}${String(jeDate.getMonth() + 1).padStart(2, '0')}${String(
-        jeDate.getDate(),
-      ).padStart(2, '0')}-${String(count + 1).padStart(4, '0')}`;
+      // IMPORTANT: AccountingService uses its own PrismaService, so we cannot call it inside tx safely.
+      // So we only update payment here; JE is created after transaction.
+      return { payPosted };
+    });
 
-      const je = await tx.journalEntry.create({
-        data: {
-          status: 'POSTED',
-          documentNo: jeNo,
-          documentDate: jeDate,
-          description: `Payment ${pay.documentNo} posting`,
-          sourceType: 'Payment',
-          sourceId: pay.id,
-          createdById: actor.sub,
-          postedById: actor.sub,
-          postedAt: new Date(),
-          lines: { create: journalLines },
-        },
-      });
-
-      return { payPosted, je };
+    const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+      documentDate: pay.documentDate,
+      description: `Payment ${pay.documentNo} posting`,
+      sourceType: 'Payment',
+      sourceId: pay.id,
+      lines: journalLines,
     });
 
     await this.audit.log({
@@ -350,10 +321,10 @@ export class PaymentsService {
       action: AuditAction.POST,
       entity: 'Payment',
       entityId: id,
-      after: { status: updated.payPosted.status, journalEntryId: updated.je.id },
-      message: `Posted payment ${pay.documentNo} and created JE ${updated.je.documentNo}`,
+      after: { status: result.payPosted.status, journalEntryId: je.id },
+      message: `Posted payment ${pay.documentNo} and created JE ${je.documentNo}`,
     });
 
-    return { ok: true, journalEntryId: updated.je.id };
+    return { ok: true, journalEntryId: je.id };
   }
 }

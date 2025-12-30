@@ -1,22 +1,19 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
-import { AuditAction, CustomerInvoiceStatus, PartyType, SalesOrderStatus, StockMoveType, VatRateCode } from '@prisma/client';
-import { InventoryService } from '../inventory/inventory.service';
-import { formatCiNo, formatSdNo, formatSoNo } from './docno';
-import { PostingLockService } from '../finance/posting-lock.service';
+import {
+  AuditAction,
+  CustomerInvoiceStatus,
+  PartyType,
+  SalesOrderStatus,
+  StockMoveType,
+  VatRateCode,
+} from '@prisma/client';
 import { JwtAccessPayload } from '../../common/types/auth.types';
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
+import { AuditService } from '../audit/audit.service';
+import { AccountingService } from '../accounting/accounting.service';
+import { DocNoService } from '../common/sequence/docno.service';
+import { PostingLockService } from '../finance/posting-lock.service';
+import { InventoryService } from '../inventory/inventory.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class SalesService {
@@ -25,20 +22,9 @@ export class SalesService {
     private readonly audit: AuditService,
     private readonly inventory: InventoryService,
     private readonly postingLock: PostingLockService,
+    private readonly docNo: DocNoService,
+    private readonly accounting: AccountingService,
   ) {}
-
-  private async nextSoNo(date: Date) {
-    const count = await this.prisma.salesOrder.count({ where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } } });
-    return formatSoNo(date, count + 1);
-  }
-  private async nextSdNo(date: Date) {
-    const count = await this.prisma.salesDelivery.count({ where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } } });
-    return formatSdNo(date, count + 1);
-  }
-  private async nextCiNo(date: Date) {
-    const count = await this.prisma.customerInvoice.count({ where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } } });
-    return formatCiNo(date, count + 1);
-  }
 
   async listOrders() {
     return this.prisma.salesOrder.findMany({
@@ -73,7 +59,7 @@ export class SalesService {
     }
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
-    const docNo = await this.nextSoNo(docDate);
+    const docNo = await this.docNo.allocate('SO', docDate);
 
     const created = await this.prisma.salesOrder.create({
       data: {
@@ -135,7 +121,6 @@ export class SalesService {
     }
 
     const orderGross = subtotal + vatTotal;
-
     const creditCheckedAt = new Date();
 
     // Credit limit check (only if creditLimit is set)
@@ -168,9 +153,7 @@ export class SalesService {
         }
 
         const cleanReason = (reason ?? '').trim();
-        if (!cleanReason) {
-          throw new BadRequestException('Credit override reason is required');
-        }
+        if (!cleanReason) throw new BadRequestException('Credit override reason is required');
 
         const updated = await this.prisma.salesOrder.update({
           where: { id },
@@ -189,13 +172,7 @@ export class SalesService {
           action: AuditAction.APPROVE,
           entity: 'SalesOrder',
           entityId: so.id,
-          after: {
-            creditOverride: true,
-            reason: cleanReason,
-            exposure,
-            orderGross,
-            creditLimit,
-          },
+          after: { creditOverride: true, reason: cleanReason, exposure, orderGross, creditLimit },
           message: `Approved SO ${so.documentNo} using credit override. Reason: ${cleanReason}`,
         });
 
@@ -203,7 +180,6 @@ export class SalesService {
       }
     }
 
-    // Normal approval (within limit or no limit)
     const updated = await this.prisma.salesOrder.update({
       where: { id },
       data: {
@@ -227,7 +203,7 @@ export class SalesService {
     return { ok: true };
   }
 
-  async deliverOrder(actor:JwtAccessPayload, soId: string, dto: any) {
+  async deliverOrder(actor: JwtAccessPayload, soId: string, dto: any) {
     const so = await this.prisma.salesOrder.findUnique({
       where: { id: soId },
       include: { lines: true },
@@ -240,20 +216,22 @@ export class SalesService {
 
     const soLineById = new Map(so.lines.map((l) => [l.id, l]));
 
-    // MVP: check delivered qty by product (simplified). Later: track per line precisely.
     const deliveredAgg = await this.prisma.salesDeliveryLine.groupBy({
       by: ['productId'],
       where: { delivery: { soId } },
       _sum: { quantity: true },
     });
+
     const deliveredByProduct = new Map<string, number>();
     for (const d of deliveredAgg) deliveredByProduct.set(d.productId, Number(d._sum.quantity ?? 0));
 
     for (const dl of dto.lines) {
       const soLine = soLineById.get(dl.soLineId);
       if (!soLine) throw new BadRequestException('Invalid soLineId');
+
       const already = deliveredByProduct.get(soLine.productId) ?? 0;
       const newQty = Number(dl.quantity);
+
       if (newQty <= 0) throw new BadRequestException('Delivery quantity must be > 0');
       if (already + newQty > Number(soLine.quantity) + 1e-9) {
         throw new BadRequestException('Delivering exceeds ordered quantity');
@@ -261,7 +239,7 @@ export class SalesService {
     }
 
     const now = new Date();
-    const delNo = await this.nextSdNo(now);
+    const delNo = await this.docNo.allocate('DEL', now);
 
     const delivery = await this.prisma.salesDelivery.create({
       data: {
@@ -313,6 +291,7 @@ export class SalesService {
       where: { delivery: { soId } },
       _sum: { quantity: true },
     });
+
     const totalDelivered = Number(totalDeliveredAgg._sum.quantity ?? 0);
 
     let newStatus: SalesOrderStatus = SalesOrderStatus.PARTIALLY_DELIVERED;
@@ -335,7 +314,6 @@ export class SalesService {
     return { deliveryId: delivery.id, stockMoveId: move.id };
   }
 
-  // ---- Customer Invoice
   private async vatPercent(vatCode: VatRateCode): Promise<number> {
     const v = await this.prisma.vatRate.findUnique({ where: { code: vatCode } });
     if (!v) throw new BadRequestException('Invalid vatCode');
@@ -405,7 +383,7 @@ export class SalesService {
     const grandTotal = subtotal + vatTotal;
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
-    const docNo = await this.nextCiNo(docDate);
+    const docNo = await this.docNo.allocate('CI', docDate);
 
     const created = await this.prisma.customerInvoice.create({
       data: {
@@ -447,14 +425,11 @@ export class SalesService {
     if (inv.status !== CustomerInvoiceStatus.DRAFT) throw new BadRequestException('Only DRAFT invoices can be posted');
 
     await this.postingLock.assertPostingAllowed(actor, inv.documentDate, `Sales.postInvoice invoiceId=${inv.id}`);
-    // Accounts
+
     const accAR = await this.prisma.account.findUnique({ where: { code: '120' } });
     const accSales = await this.prisma.account.findUnique({ where: { code: '600' } });
     const accVatPayable = await this.prisma.account.findUnique({ where: { code: '391' } });
-
-    if (!accAR || !accSales || !accVatPayable) {
-      throw new BadRequestException('Missing required accounts (120, 600, 391)');
-    }
+    if (!accAR || !accSales || !accVatPayable) throw new BadRequestException('Missing required accounts (120, 600, 391)');
 
     const subtotal = Number(inv.subtotal);
     const vatTotal = Number(inv.vatTotal);
@@ -463,6 +438,7 @@ export class SalesService {
     const journalLines: any[] = [
       {
         accountId: accAR.id,
+        partyId: inv.customerId,
         description: `AR ${inv.customer.name} (${inv.documentNo})`,
         debit: grandTotal.toFixed(2),
         credit: '0',
@@ -471,6 +447,7 @@ export class SalesService {
       },
       {
         accountId: accSales.id,
+        partyId: inv.customerId,
         description: `Sales revenue (${inv.documentNo})`,
         debit: '0',
         credit: subtotal.toFixed(2),
@@ -482,12 +459,12 @@ export class SalesService {
     if (vatTotal > 0) {
       journalLines.push({
         accountId: accVatPayable.id,
+        partyId: inv.customerId,
         description: `KDV output (${inv.documentNo})`,
         debit: '0',
         credit: vatTotal.toFixed(2),
         currencyCode: inv.currencyCode,
         amountCurrency: vatTotal.toFixed(2),
-        partyId: inv.customerId,
       });
     }
 
@@ -495,37 +472,24 @@ export class SalesService {
     const credit = journalLines.reduce((s, l) => s + Number(l.credit), 0);
     if (Math.abs(debit - credit) > 0.005) throw new BadRequestException('Auto journal not balanced');
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    // Post invoice (transaction) then create JE via AccountingService
+    const invPosted = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.customerInvoice.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('CustomerInvoice not found');
       if (locked.status !== CustomerInvoiceStatus.DRAFT) throw new BadRequestException('Already posted/canceled');
 
-      const invPosted = await tx.customerInvoice.update({
+      return tx.customerInvoice.update({
         where: { id },
         data: { status: CustomerInvoiceStatus.POSTED, postedAt: new Date(), postedById: actor.sub },
       });
+    });
 
-      // Create JE POSTED (same approach as SupplierInvoice; we'll centralize later)
-      const jeDate = new Date();
-      const count = await tx.journalEntry.count({ where: { documentDate: { gte: startOfDay(jeDate), lte: endOfDay(jeDate) } } });
-      const jeNo = `JE-${jeDate.getFullYear()}${String(jeDate.getMonth() + 1).padStart(2, '0')}${String(jeDate.getDate()).padStart(2, '0')}-${String(count + 1).padStart(4, '0')}`;
-
-      const je = await tx.journalEntry.create({
-        data: {
-          status: 'POSTED',
-          documentNo: jeNo,
-          documentDate: jeDate,
-          description: `Customer invoice ${inv.documentNo} posting`,
-          sourceType: 'CustomerInvoice',
-          sourceId: inv.id,
-          createdById: actor.sub,
-          postedById: actor.sub,
-          postedAt: new Date(),
-          lines: { create: journalLines },
-        },
-      });
-
-      return { invPosted, je };
+    const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+      documentDate: inv.documentDate,
+      description: `Customer invoice ${inv.documentNo} posting`,
+      sourceType: 'CustomerInvoice',
+      sourceId: inv.id,
+      lines: journalLines,
     });
 
     await this.audit.log({
@@ -533,10 +497,10 @@ export class SalesService {
       action: AuditAction.POST,
       entity: 'CustomerInvoice',
       entityId: id,
-      after: { status: updated.invPosted.status },
-      message: `Posted Customer Invoice ${inv.documentNo} and created JE ${updated.je.documentNo}`,
+      after: { status: invPosted.status, journalEntryId: je.id },
+      message: `Posted Customer Invoice ${inv.documentNo} and created JE ${je.documentNo}`,
     });
 
-    return { ok: true, journalEntryId: updated.je.id };
+    return { ok: true, journalEntryId: je.id };
   }
 }
