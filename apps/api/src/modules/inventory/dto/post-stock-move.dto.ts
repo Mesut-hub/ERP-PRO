@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class PostStockMoveDto {
   @IsOptional()
@@ -8,4 +8,9 @@ export class PostStockMoveDto {
   @IsOptional()
   @IsBoolean()
   allowNegativeStockOverride?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(15)
+  reason?: string;
 }

@@ -6,6 +6,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAccessPayload } from '../../common/types/auth.types';
 import { AccountingService } from './accounting.service';
 import { CreateJournalDto } from './dto/create-journal.dto';
+import { PostingOverrideDto } from '../common/dto/posting-override.dto';
+import { ReverseJournalDto } from './dto/reverse-journal.dto';
 
 @Controller('acc')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
@@ -32,7 +34,13 @@ export class AccountingController {
 
   @Post('journals/:id/post')
   @RequirePermissions('acc.journal.post')
-  post(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string) {
-    return this.service.postJournal(actor, id);
+  post(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
+    return this.service.postJournal(actor, id, dto.reason);
   }
+
+  @Post('journals/:id/reverse')
+  @RequirePermissions('acc.journal.post')
+  reverse(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ReverseJournalDto) {
+    return this.service.reverseJournal(actor, id, dto);
+}
 }

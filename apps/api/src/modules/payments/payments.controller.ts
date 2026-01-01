@@ -7,6 +7,7 @@ import { JwtAccessPayload } from '../../common/types/auth.types';
 import { PaymentsService } from './payments.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { PostingOverrideDto } from '../common/dto/posting-override.dto';
+import { VoidPaymentDto } from './dto/void-payment.dto';
 
 @Controller('pay')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
@@ -29,5 +30,11 @@ export class PaymentsController {
   @RequirePermissions('pay.payment.post')
   post(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
     return this.service.post(actor, id, dto.reason);
+  }
+
+  @Post('payments/:id/void')
+  @RequirePermissions('pay.payment.post')
+  void(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: VoidPaymentDto) {
+    return this.service.voidPayment(actor, id, dto);
   }
 }

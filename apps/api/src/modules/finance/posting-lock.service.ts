@@ -50,7 +50,7 @@ export class PostingLockService {
     if (!canOverride) throw new ForbiddenException(blockedMsg);
 
     const clean = (overrideReason ?? '').trim();
-    if (!clean) {
+    if (!clean || clean.length < 15) {
       throw new ForbiddenException(`Override reason is required to bypass posting locks. Context=${context}`);
     }
 

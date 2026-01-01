@@ -6,6 +6,7 @@ import {
   SalesOrderStatus,
   StockMoveType,
   VatRateCode,
+  InvoiceKind,
 } from '@prisma/client';
 import { JwtAccessPayload } from '../../common/types/auth.types';
 import { AuditService } from '../audit/audit.service';
@@ -14,6 +15,29 @@ import { DocNoService } from '../common/sequence/docno.service';
 import { PostingLockService } from '../finance/posting-lock.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateInvoiceNoteDto } from './dto/create-invoice-note.dto';
+
+function round2(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Professional MVP: deterministic VAT mapping.
+ * Later, replace with a VatCode table lookup (and keep same interface).
+ */
+function vatRateFromCode(vatCode: string): number {
+  const code = (vatCode ?? '').toUpperCase().trim();
+  switch (code) {
+    case 'KDV_0': return 0;
+    case 'KDV_1': return 1;
+    case 'KDV_8': return 8;
+    case 'KDV_10': return 10;
+    case 'KDV_18': return 18;
+    case 'KDV_20': return 20;
+    default:
+      throw new BadRequestException(`Unsupported vatCode: ${vatCode}`);
+  }
+}
 
 @Injectable()
 export class SalesService {
@@ -416,7 +440,111 @@ export class SalesService {
     return created;
   }
 
-  async postInvoice(actor: JwtAccessPayload, id: string) {
+  async createInvoiceNote(actor: JwtAccessPayload, dto: CreateInvoiceNoteDto) {
+    if (dto.kind !== InvoiceKind.CREDIT_NOTE && dto.kind !== InvoiceKind.DEBIT_NOTE) {
+      throw new BadRequestException('kind must be CREDIT_NOTE or DEBIT_NOTE');
+    }
+    if (!dto.lines?.length) throw new BadRequestException('lines are required');
+
+    const base = await this.prisma.customerInvoice.findUnique({
+      where: { id: dto.noteOfId },
+      include: { customer: true },
+    });
+    if (!base) throw new NotFoundException('Base invoice not found');
+
+    if (base.status !== CustomerInvoiceStatus.POSTED) {
+      throw new BadRequestException('Notes can only be issued against POSTED invoices');
+    }
+
+    const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
+    const seqCode = dto.kind === InvoiceKind.CREDIT_NOTE ? 'CCN' : 'CDN';
+    const docNo = await this.docNo.allocate(seqCode, docDate);
+
+    // Force same customer + currency as base invoice (professional control)
+    const customerId = base.customerId;
+    const currencyCode = base.currencyCode;
+    
+    // OPTIONAL but very professional: ensure VatRate exists and active in DB
+    const vatCodes = Array.from(new Set(dto.lines.map((l) => l.vatCode)));
+    const vatRates = await this.prisma.vatRate.findMany({
+      where: { code: { in: vatCodes as any }, isActive: true },
+      select: { code: true, percent: true },
+    });
+    if (vatRates.length !== vatCodes.length) throw new BadRequestException('One or more VAT codes are invalid/inactive');
+    const vatPercentByCode = new Map(vatRates.map((v) => [v.code, Number(v.percent)]));
+
+    // Compute line amounts and totals
+    const computedLines = dto.lines.map((l) => {
+      const qty = Number(l.quantity);
+      const price = Number(l.unitPrice);
+      if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Invalid quantity');
+      if (!Number.isFinite(price) || price < 0) throw new BadRequestException('Invalid unitPrice');
+
+      // Prefer DB percent; fallback to mapping for safety (or remove fallback if you want strict DB-only)
+      const percent = vatPercentByCode.get(l.vatCode as any) ?? vatRateFromCode(l.vatCode);
+
+      const lineSubtotal = round2(qty * price);
+      const lineVat = round2(lineSubtotal * (percent / 100));
+      const lineTotal = round2(lineSubtotal + lineVat);
+
+      return {
+        productId: l.productId ?? null,
+        description: l.description,
+        quantity: l.quantity,
+        unitPrice: l.unitPrice,
+        vatCode: l.vatCode as any,
+        
+        lineSubtotal: lineSubtotal.toFixed(2),
+        lineVat: lineVat.toFixed(2),
+        lineTotal: lineTotal.toFixed(2),
+      };
+    });
+
+    const subtotal = round2(computedLines.reduce((s, x) => s + Number(x.lineSubtotal), 0));
+    const vatTotal = round2(computedLines.reduce((s, x) => s + Number(x.lineVat), 0));
+    const grandTotal = round2(computedLines.reduce((s, x) => s + Number(x.lineTotal), 0));
+
+    // Force same customer + currency as base invoice (professional constraint)
+    const created = await this.prisma.customerInvoice.create({
+      data: {
+        status: CustomerInvoiceStatus.DRAFT,
+        kind: dto.kind,
+        noteOfId: base.id,
+        noteReason: dto.reason,
+
+        documentNo: docNo,
+        documentDate: docDate,
+        customerId,
+        currencyCode,
+
+        subtotal: subtotal.toFixed(2),
+        vatTotal: vatTotal.toFixed(2),
+        grandTotal: grandTotal.toFixed(2),
+
+        createdById: actor.sub,
+
+        lines: {
+          create: computedLines,
+        },
+      },
+      include: { lines: true },
+    });
+
+    await this.audit.log({
+      actorId: actor.sub,
+      action: AuditAction.CREATE,
+      entity: 'CustomerInvoice',
+      entityId: created.id,
+      after: { kind: created.kind, documentNo: created.documentNo, noteOfId: created.noteOfId },
+      message: `Created ${created.kind} ${created.documentNo} for invoice ${base.documentNo}. Reason: ${dto.reason}`,
+    });
+
+    return created;
+  }
+
+  // NOTE: Your existing postInvoice should be updated to support kind logic below.
+
+  async postInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.customerInvoice.findUnique({
       where: { id },
       include: { customer: true },
@@ -424,7 +552,12 @@ export class SalesService {
     if (!inv) throw new NotFoundException('CustomerInvoice not found');
     if (inv.status !== CustomerInvoiceStatus.DRAFT) throw new BadRequestException('Only DRAFT invoices can be posted');
 
-    await this.postingLock.assertPostingAllowed(actor, inv.documentDate, `Sales.postInvoice invoiceId=${inv.id}`);
+    await this.postingLock.assertPostingAllowed(
+      actor,
+      inv.documentDate,
+      `Sales.postInvoice invoiceId=${inv.id}`,
+      overrideReason,
+    );
 
     const accAR = await this.prisma.account.findUnique({ where: { code: '120' } });
     const accSales = await this.prisma.account.findUnique({ where: { code: '600' } });
@@ -435,22 +568,30 @@ export class SalesService {
     const vatTotal = Number(inv.vatTotal);
     const grandTotal = Number(inv.grandTotal);
 
+    const isCredit = inv.kind === InvoiceKind.CREDIT_NOTE;
+    
+    // Helper to flip debit/credit cleanly for CREDIT_NOTE
+    const dr = (amt: number) => (isCredit ? '0' : amt.toFixed(2));
+    const cr = (amt: number) => (isCredit ? amt.toFixed(2) : '0');
+    const drRev = (amt: number) => (isCredit ? amt.toFixed(2) : '0');
+    const crRev = (amt: number) => (isCredit ? '0' : amt.toFixed(2));
+
     const journalLines: any[] = [
       {
         accountId: accAR.id,
         partyId: inv.customerId,
-        description: `AR ${inv.customer.name} (${inv.documentNo})`,
-        debit: grandTotal.toFixed(2),
-        credit: '0',
+        description: `${inv.kind} AR ${inv.customer.name} (${inv.documentNo})`,
+        debit: dr(grandTotal),
+        credit: cr(grandTotal),
         currencyCode: inv.currencyCode,
         amountCurrency: grandTotal.toFixed(2),
       },
       {
         accountId: accSales.id,
         partyId: inv.customerId,
-        description: `Sales revenue (${inv.documentNo})`,
-        debit: '0',
-        credit: subtotal.toFixed(2),
+        description: `${inv.kind} Sales revenue (${inv.documentNo})`,
+        debit: drRev(subtotal),
+        credit: crRev(subtotal),
         currencyCode: inv.currencyCode,
         amountCurrency: subtotal.toFixed(2),
       },
@@ -460,9 +601,9 @@ export class SalesService {
       journalLines.push({
         accountId: accVatPayable.id,
         partyId: inv.customerId,
-        description: `KDV output (${inv.documentNo})`,
-        debit: '0',
-        credit: vatTotal.toFixed(2),
+        description: `${inv.kind} KDV output (${inv.documentNo})`,
+        debit: drRev(vatTotal),
+        credit: crRev(vatTotal),
         currencyCode: inv.currencyCode,
         amountCurrency: vatTotal.toFixed(2),
       });
@@ -486,7 +627,7 @@ export class SalesService {
 
     const je = await this.accounting.createPostedFromIntegration(actor.sub, {
       documentDate: inv.documentDate,
-      description: `Customer invoice ${inv.documentNo} posting`,
+      description: `${inv.kind} Customer invoice ${inv.documentNo} posting`,
       sourceType: 'CustomerInvoice',
       sourceId: inv.id,
       lines: journalLines,
@@ -498,7 +639,9 @@ export class SalesService {
       entity: 'CustomerInvoice',
       entityId: id,
       after: { status: invPosted.status, journalEntryId: je.id },
-      message: `Posted Customer Invoice ${inv.documentNo} and created JE ${je.documentNo}`,
+      message: overrideReason
+        ? `Posted Customer Invoice ${inv.kind} ${inv.documentNo} (override reason: ${overrideReason}) and created JE ${je.documentNo}`
+        : `Posted Customer Invoice ${inv.kind} ${inv.documentNo} and created JE ${je.documentNo}`,
     });
 
     return { ok: true, journalEntryId: je.id };

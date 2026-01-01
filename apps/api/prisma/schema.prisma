@@ -21,6 +21,7 @@ model User {
   roles           UserRole[]
 
   fiscalPeriodsClosed FiscalPeriod[] @relation("FiscalPeriodClosedBy")
+  paymentsVoided      Payment[]      @relation("PaymentVoidedBy")
 
   // Sales
   soCreated  SalesOrder[]      @relation("SoCreatedBy")
@@ -631,7 +632,7 @@ model SupplierInvoice {
   vatTotal   Decimal @default(0) @db.Decimal(18, 2)
   grandTotal Decimal @default(0) @db.Decimal(18, 2)
 
-  notes String?
+  // notes String?
 
   createdById String?
   postedById  String?
@@ -639,6 +640,13 @@ model SupplierInvoice {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  kind       InvoiceKind @default(INVOICE)
+  noteOfId   String?
+  noteReason String?
+
+  noteOf SupplierInvoice?  @relation("SupplierInvoiceNoteOf", fields: [noteOfId], references: [id], onDelete: SetNull)
+  notes  SupplierInvoice[] @relation("SupplierInvoiceNoteOf")
 
   supplier Party          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   po       PurchaseOrder? @relation(fields: [poId], references: [id], onDelete: SetNull)
@@ -650,6 +658,8 @@ model SupplierInvoice {
   lines             SupplierInvoiceLine[]
   paymentsAllocated PaymentAllocation[]
 
+  @@index([kind])
+  @@index([noteOfId])
   @@index([status])
   @@index([supplierId])
   @@index([documentDate])
@@ -708,6 +718,14 @@ model JournalEntry {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  reversalOfId   String?   @unique
+  reversedAt     DateTime?
+  reversedById   String?
+  reversalReason String?
+
+  reversalOf JournalEntry? @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversal   JournalEntry? @relation("JournalReversal")
 
   createdBy User? @relation("JeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   postedBy  User? @relation("JePostedBy", fields: [postedById], references: [id], onDelete: SetNull)
@@ -871,11 +889,15 @@ model CustomerInvoice {
   vatTotal   Decimal @default(0) @db.Decimal(18, 2)
   grandTotal Decimal @default(0) @db.Decimal(18, 2)
 
-  notes String?
+  // notes String?
 
   createdById String?
   postedById  String?
   postedAt    DateTime?
+
+  kind       InvoiceKind @default(INVOICE)
+  noteOfId   String?
+  noteReason String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -887,12 +909,17 @@ model CustomerInvoice {
   createdBy User? @relation("CiCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   postedBy  User? @relation("CiPostedBy", fields: [postedById], references: [id], onDelete: SetNull)
 
+  noteOf CustomerInvoice?  @relation("CustomerInvoiceNoteOf", fields: [noteOfId], references: [id], onDelete: SetNull)
+  notes  CustomerInvoice[] @relation("CustomerInvoiceNoteOf")
+
   lines             CustomerInvoiceLine[]
   paymentsAllocated PaymentAllocation[]
 
+  @@index([kind])
   @@index([status])
   @@index([customerId])
   @@index([documentDate])
+  @@index([noteOfId])
 }
 
 model CustomerInvoiceLine {
@@ -940,6 +967,15 @@ model Payment {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  voidOfId   String?   @unique
+  voidedAt   DateTime?
+  voidedById String?
+  voidReason String?
+
+  voidOf   Payment? @relation("PaymentVoid", fields: [voidOfId], references: [id], onDelete: SetNull)
+  void     Payment? @relation("PaymentVoid")
+  voidedBy User?    @relation("PaymentVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
 
   party    Party    @relation(fields: [partyId], references: [id], onDelete: Restrict)
   currency Currency @relation(fields: [currencyCode], references: [code], onDelete: Restrict)
@@ -1125,4 +1161,10 @@ enum PaymentStatus {
 enum FiscalPeriodStatus {
   OPEN
   CLOSED
+}
+
+enum InvoiceKind {
+  INVOICE
+  CREDIT_NOTE
+  DEBIT_NOTE
 }

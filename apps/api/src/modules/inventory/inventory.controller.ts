@@ -35,7 +35,7 @@ export class InventoryController {
   @Post('moves/:id/post')
   @RequirePermissions('inv.move.post')
   postMove(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostStockMoveDto) {
-    return this.service.postMove(actor, id, dto.notes);
+    return this.service.postMove(actor, id, dto.notes, dto.reason);
   }
   @Post('moves/:id/cancel')
   @RequirePermissions('inv.move.cancel')

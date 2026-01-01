@@ -1,12 +1,17 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { AuditAction, PartyType, PurchaseOrderStatus, StockMoveType, SupplierInvoiceStatus, VatRateCode } from '@prisma/client';
+import { DocNoService } from '../common/sequence/docno.service';
+import { AuditAction, InvoiceKind, PartyType, PurchaseOrderStatus, StockMoveType, SupplierInvoiceStatus, VatRateCode } from '@prisma/client';
 import { formatGrnNo, formatPoNo, formatSupplierInvNo } from './docno';
 import { InventoryService } from '../inventory/inventory.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { PostingLockService } from '../finance/posting-lock.service';
 import { JwtAccessPayload } from '../../common/types/auth.types';
+import { CreateSupplierInvoiceNoteDto } from './dto/create-supplier-invoice-note.dto';
+import { sumInvoice } from '../sales/sales.posting.helpers';
+import { vatRateFromCode } from '../common/vat/vat-rate';
+import { computeLineTotals } from '../common/invoice/line-totals';
 
 function startOfDay(d: Date) {
   const x = new Date(d);
@@ -24,6 +29,7 @@ export class PurchasingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly docNo: DocNoService,
     private readonly inventory: InventoryService,
     private readonly accounting: AccountingService,
     private readonly postingLock: PostingLockService,
@@ -381,7 +387,78 @@ export class PurchasingService {
     return created;
   }
 
-  async postSupplierInvoice(actor: JwtAccessPayload, id: string) {
+  async createSupplierInvoiceNote(actor: JwtAccessPayload, dto: CreateSupplierInvoiceNoteDto) {
+    if (dto.kind === InvoiceKind.INVOICE) {
+      throw new BadRequestException('Supplier invoice note kind must be CREDIT_NOTE or DEBIT_NOTE');
+    }
+
+    const base = await this.prisma.supplierInvoice.findUnique({
+      where: { id: dto.noteOfId },
+      include: { supplier: true },
+    });
+    if (!base) throw new NotFoundException('Base supplier invoice not found');
+    if (base.status !== 'POSTED') throw new BadRequestException('You can only issue notes against POSTED supplier invoices');
+
+    const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
+    const seqCode = dto.kind === InvoiceKind.CREDIT_NOTE ? 'SCN' : 'SDN';
+    const docNo = await this.docNo.allocate(seqCode, docDate);
+
+    const created = await this.prisma.supplierInvoice.create({
+      data: {
+        status: 'DRAFT',
+        kind: dto.kind,
+        noteOfId: base.id,
+        noteReason: dto.reason,
+
+        documentNo: docNo,
+        documentDate: docDate,
+        supplierId: base.supplierId,
+        currencyCode: base.currencyCode,
+
+        createdById: actor.sub,
+
+        lines: {
+          create: dto.lines.map((l) => {
+            const qty = Number(l.quantity);
+            const price = Number(l.unitPrice);
+            const vatCode = l.vatCode as VatRateCode;
+            
+            // You already compute totals; keep it
+            const vatRate = vatRateFromCode(vatCode);
+            const totals = computeLineTotals(qty, price, vatRate);
+            
+            return {
+              // IMPORTANT: connect relation, do NOT set productId
+              ...(l.productId ? { product: { connect: { id: l.productId } } } : {}),
+              
+              description: l.description,
+              quantity: l.quantity,        // ok as string (Prisma Decimal)
+              unitPrice: l.unitPrice,      // ok as string
+              vatCode,                     // this links to VatRate via relation fields
+              lineSubtotal: totals.lineSubtotal,
+              lineVat: totals.lineVat,
+              lineTotal: totals.lineTotal,
+            };
+          }),
+        },
+      },
+      include: { lines: true },
+    });
+
+    await this.audit.log({
+      actorId: actor.sub,
+      action: AuditAction.CREATE,
+      entity: 'SupplierInvoice',
+      entityId: created.id,
+      after: { kind: created.kind, documentNo: created.documentNo, noteOfId: created.noteOfId },
+      message: `Created ${created.kind} ${created.documentNo} for supplier invoice ${base.documentNo}. Reason: ${dto.reason}`,
+    });
+
+    return created;
+  }
+
+
+  async postSupplierInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.supplierInvoice.findUnique({
       where: { id },
       include: { lines: true, supplier: true },
@@ -389,11 +466,111 @@ export class PurchasingService {
     if (!inv) throw new NotFoundException('SupplierInvoice not found');
     if (inv.status !== SupplierInvoiceStatus.DRAFT) throw new BadRequestException('Only DRAFT invoices can be posted');
 
-    await this.postingLock.assertPostingAllowed(actor, inv.documentDate, `Purchasing.postSupplierInvoice invoiceId=${inv.id}`);
-    // Accounts
+    await this.postingLock.assertPostingAllowed(
+      actor,
+      inv.documentDate,
+      `Purchasing.postSupplierInvoice invoiceId=${inv.id}`,
+      overrideReason,
+    );
+
+    // VAT rates: use same VAT code list
+    const linesWithRate = inv.lines.map((l) => ({
+      quantity: Number(l.quantity),
+      unitPrice: Number(l.unitPrice),
+      vatRate: vatRateFromCode(l.vatCode as VatRateCode),
+    }));
+
+    const net = inv.lines.reduce((s, l) => s + Number(l.lineSubtotal), 0);
+    const vat = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
+    const total = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
+
+    const accAP = await this.prisma.account.findUnique({ where: { code: '320' } });
+    const accExp = await this.prisma.account.findUnique({ where: { code: '770' } });
+    const accVatIn = await this.prisma.account.findUnique({ where: { code: '191' } });
+    if (!accAP || !accExp || !accVatIn) throw new BadRequestException('Missing required accounts (320,770,191)');
+    
+    const isCredit = inv.kind === InvoiceKind.CREDIT_NOTE;
+    const journalLines: any[] = [];
+
+    if (!isCredit) {
+      // INVOICE / DEBIT_NOTE: Dr Expense, Dr VAT In, Cr AP
+      journalLines.push({
+        accountId: accExp.id,
+        partyId: inv.supplierId,
+        description: `${inv.kind} ${inv.documentNo} Expense`,
+        debit: net.toFixed(2),
+        credit: '0',
+        currencyCode: inv.currencyCode,
+        amountCurrency: net.toFixed(2),
+      });
+      journalLines.push({
+        accountId: accVatIn.id,
+        partyId: inv.supplierId,
+        description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
+        debit: vat.toFixed(2),
+        credit: '0',
+        currencyCode: inv.currencyCode,
+        amountCurrency: vat.toFixed(2),
+      });
+      journalLines.push({
+        accountId: accAP.id,
+        partyId: inv.supplierId,
+        description: `${inv.kind} ${inv.documentNo} AP`,
+        debit: '0',
+        credit: total.toFixed(2),
+        currencyCode: inv.currencyCode,
+        amountCurrency: total.toFixed(2),
+      });
+    } else {
+      // CREDIT_NOTE reverses: Dr AP, Cr Expense, Cr VAT In
+      journalLines.push({
+        accountId: accAP.id,
+        partyId: inv.supplierId,
+        description: `${inv.kind} ${inv.documentNo} AP reversal`,
+        debit: total.toFixed(2),
+        credit: '0',
+        currencyCode: inv.currencyCode,
+        amountCurrency: total.toFixed(2),
+      });
+      journalLines.push({
+        accountId: accExp.id,
+        partyId: inv.supplierId,
+        description: `${inv.kind} ${inv.documentNo} Expense reversal`,
+        debit: '0',
+        credit: net.toFixed(2),
+        currencyCode: inv.currencyCode,
+        amountCurrency: net.toFixed(2),
+      });
+      journalLines.push({
+        accountId: accVatIn.id,
+        partyId: inv.supplierId,
+        description: `${inv.kind} ${inv.documentNo} VAT reversal`,
+        debit: '0',
+        credit: vat.toFixed(2),
+        currencyCode: inv.currencyCode,
+        amountCurrency: vat.toFixed(2),
+      });
+    }
+
+    const posted = await this.prisma.$transaction(async (tx) => {
+      const upd = await tx.supplierInvoice.update({
+        where: { id: inv.id },
+        data: { status: 'POSTED', postedAt: new Date(), postedById: actor.sub },
+      });
+
+      const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+        documentDate: inv.documentDate,
+        description: `${inv.kind} Supplier invoice ${inv.documentNo} posting`,
+        sourceType: 'SupplierInvoice',
+        sourceId: inv.id,
+        lines: journalLines,
+      });
+
+      return { upd, je };
+    });
+    
+    /*// Accounts
     const accInventory = await this.getAccountByCode('150');
-    const accVatIn = await this.getAccountByCode('191');
-    const accAP = await this.getAccountByCode('320');
     const accExpense = await this.getAccountByCode('770');
 
     // Build journal lines
@@ -465,53 +642,37 @@ export class PurchasingService {
       throw new BadRequestException(`Auto journal not balanced. debit=${debit}, credit=${credit}`);
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const invPosted = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.supplierInvoice.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('SupplierInvoice not found');
       if (locked.status !== SupplierInvoiceStatus.DRAFT) throw new BadRequestException('Invoice already posted/canceled');
 
       // Post invoice
-      const invPosted = await tx.supplierInvoice.update({
+      return tx.supplierInvoice.update({
         where: { id },
         data: { status: SupplierInvoiceStatus.POSTED, postedAt: new Date(), postedById: actor.sub },
       });
-
-      // Create + post journal entry (immediately POSTED)
-      const jeCountDate = new Date();
-      const jeCount = await tx.journalEntry.count({
-        where: { documentDate: { gte: startOfDay(jeCountDate), lte: endOfDay(jeCountDate) } },
-      });
-      const jeNo = `JE-${jeCountDate.getFullYear()}${String(jeCountDate.getMonth() + 1).padStart(2, '0')}${String(
-        jeCountDate.getDate(),
-      ).padStart(2, '0')}-${String(jeCount + 1).padStart(4, '0')}`;
-
-      const je = await tx.journalEntry.create({
-        data: {
-          status: 'POSTED',
-          documentNo: jeNo,
-          documentDate: jeCountDate,
-          description: `Supplier invoice ${inv.documentNo} posting`,
-          sourceType: 'SupplierInvoice',
-          sourceId: inv.id,
-          createdById: actor.sub,
-          postedById: actor.sub,
-          postedAt: new Date(),
-          lines: { create: journalLines },
-        },
-      });
-
-      return { invPosted, je };
     });
+
+    const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+      documentDate: inv.documentDate,
+      description: `Supplier invoice ${inv.documentNo} posting`,
+      sourceType: 'SupplierInvoice',
+      sourceId: inv.id,
+      lines: journalLines,
+    });*/
 
     await this.audit.log({
       actorId: actor.sub,
       action: AuditAction.POST,
       entity: 'SupplierInvoice',
-      entityId: id,
-      after: { status: updated.invPosted.status },
-      message: `Posted Supplier Invoice ${inv.documentNo} and created JE ${updated.je.documentNo}`,
+      entityId: inv.id,
+      after: { status: 'POSTED', journalEntryId: posted.je.id },
+      message: overrideReason
+        ? `Posted Supplier Invoice ${inv.kind} ${inv.documentNo} (override reason: ${overrideReason}) and created JE ${posted.je.documentNo}`
+        : `Posted Supplier Invoice ${inv.kind} ${inv.documentNo} and created JE ${posted.je.documentNo}`,
     });
 
-    return { ok: true, journalEntryId: updated.je.id };
+    return { ok: true, journalEntryId: posted.je.id };
   }
 }

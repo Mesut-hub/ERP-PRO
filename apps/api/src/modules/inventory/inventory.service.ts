@@ -166,7 +166,7 @@ export class InventoryService {
     }
   }
 
-  async postMove(actor: JwtAccessPayload, id: string, notes?: string) {
+  async postMove(actor: JwtAccessPayload, id: string, notes?: string, overrideReason?: string) {
     const move = await this.prisma.stockMove.findUnique({
       where: { id },
       include: { lines: true },
@@ -174,7 +174,12 @@ export class InventoryService {
     if (!move) throw new NotFoundException('StockMove not found');
     if (move.status !== StockMoveStatus.DRAFT) throw new BadRequestException('Only DRAFT moves can be posted');
 
-    await this.postingLock.assertPostingAllowed(actor, move.documentDate, `Inventory.postMove moveId=${move.id}`);
+    await this.postingLock.assertPostingAllowed(
+      actor,
+      move.documentDate,
+      `Inventory.postMove moveId=${move.id}`,
+      overrideReason,
+    );
     this.validateWarehouses(move.type, move.fromWarehouseId ?? undefined, move.toWarehouseId ?? undefined);
 
     // Validate stock availability for OUT movements (ISSUE, TRANSFER, ADJUSTMENT negative)
@@ -276,7 +281,9 @@ export class InventoryService {
       entity: 'StockMove',
       entityId: id,
       after: { status: result.status, postedAt: result.postedAt, postedById: result.postedById },
-      message: `Posted stock move ${move.documentNo}`,
+      message: overrideReason
+        ? `Posted stock move ${move.documentNo} (override reason: ${overrideReason})`
+        : `Posted JE ${move.documentNo}`
     });
 
     return { ok: true };
