@@ -2,22 +2,10 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction, JournalStatus } from '@prisma/client';
-import { formatJeNo } from './docno';
 import { PostingLockService } from '../finance/posting-lock.service';
 import { JwtAccessPayload } from '../../common/types/auth.types';
 import { DocNoService } from '../common/sequence/docno.service';
 import { ReverseJournalDto } from './dto/reverse-journal.dto';
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
 
 @Injectable()
 export class AccountingService {
@@ -39,13 +27,6 @@ export class AccountingService {
       take: 100,
     });
   }
-
-  /*private async nextJeNo(date: Date) {
-    const count = await this.prisma.journalEntry.count({
-      where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } },
-    });
-    return formatJeNo(date, count + 1);
-  }*/
 
   private validateBalanced(lines: Array<{ debit: string; credit: string }>) {
     const debit = lines.reduce((s, l) => s + Number(l.debit), 0);
@@ -141,53 +122,51 @@ export class AccountingService {
 
   async reverseJournal(actor: JwtAccessPayload, id: string, dto: ReverseJournalDto) {
     const original = await this.prisma.journalEntry.findUnique({
-     where: { id },
-     include: { lines: true },
-   });
-   if (!original) throw new NotFoundException('JournalEntry not found');
-   if (original.status !== 'POSTED') throw new BadRequestException('Only POSTED journals can be reversed');
+      where: { id },
+      include: { lines: true },
+    });
+    if (!original) throw new NotFoundException('JournalEntry not found');
+    if (original.status !== 'POSTED') throw new BadRequestException('Only POSTED journals can be reversed');
 
-    // prevent double reversal
-   const existing = await this.prisma.journalEntry.findFirst({ where: { reversalOfId: original.id } });
+    const existing = await this.prisma.journalEntry.findFirst({ where: { reversalOfId: original.id } });
     if (existing) throw new BadRequestException('Journal already reversed');
 
-   const revDate = new Date(dto.documentDate);
+    const revDate = new Date(dto.documentDate);
     if (Number.isNaN(revDate.getTime())) throw new BadRequestException('Invalid documentDate');
 
-    // posting locks (override reason is NOT supported here intentionally; reversal should respect locks)
     await this.postingLock.assertPostingAllowed(
-     actor,
-     revDate,
-     `Accounting.reverseJournal originalId=${original.id}`,
-     dto.reason,
+      actor,
+      revDate,
+      `Accounting.reverseJournal originalId=${original.id}`,
+      dto.reason,
     );
 
-     const reversalDocNo = await this.docNo.allocate('JE', revDate);
+    const reversalDocNo = await this.docNo.allocate('JE', revDate);
 
-   const reversedLines = original.lines.map((l) => ({
-     accountId: l.accountId,
+    const reversedLines = original.lines.map((l) => ({
+      accountId: l.accountId,
       partyId: l.partyId,
-     description: `REV of ${original.documentNo}`,
-     debit: l.credit.toString(),
-     credit: l.debit.toString(),
-     currencyCode: l.currencyCode,
-     amountCurrency: l.amountCurrency?.toString() ?? null,
+      description: `REV of ${original.documentNo}`,
+      debit: l.credit.toString(),
+      credit: l.debit.toString(),
+      currencyCode: l.currencyCode,
+      amountCurrency: l.amountCurrency?.toString() ?? null,
     }));
 
     const reversal = await this.prisma.$transaction(async (tx) => {
       const rev = await tx.journalEntry.create({
-       data: {
-         status: 'POSTED',
-         documentNo: reversalDocNo,
-         documentDate: revDate,
-         description: `Reversal of ${original.documentNo}. ${dto.reason}`,
-         sourceType: 'JournalReversal',
-         sourceId: original.id,
-         reversalOfId: original.id,
-         createdById: actor.sub,
-         postedById: actor.sub,
-         postedAt: new Date(),
-         lines: { create: reversedLines },
+        data: {
+          status: 'POSTED',
+          documentNo: reversalDocNo,
+          documentDate: revDate,
+          description: `Reversal of ${original.documentNo}. ${dto.reason}`,
+          sourceType: 'JournalReversal',
+          sourceId: original.id,
+          reversalOfId: original.id,
+          createdById: actor.sub,
+          postedById: actor.sub,
+          postedAt: new Date(),
+          lines: { create: reversedLines },
         },
       });
 
@@ -203,16 +182,16 @@ export class AccountingService {
       return rev;
     });
 
-  await this.audit.log({
-    actorId: actor.sub,
-    action: AuditAction.POST,
-    entity: 'JournalEntry',
-    entityId: reversal.id,
-    after: { reversalOfId: original.id, reason: dto.reason, reversalDocumentNo: reversal.documentNo },
-    message: `Reversed JE ${original.documentNo} with ${reversal.documentNo}. Reason: ${dto.reason}`,
-  });
+    await this.audit.log({
+      actorId: actor.sub,
+      action: AuditAction.POST,
+      entity: 'JournalEntry',
+      entityId: reversal.id,
+      after: { reversalOfId: original.id, reason: dto.reason, reversalDocumentNo: reversal.documentNo },
+      message: `Reversed JE ${original.documentNo} with ${reversal.documentNo}. Reason: ${dto.reason}`,
+    });
 
-  return { ok: true, reversalJournalEntryId: reversal.id, reversalDocumentNo: reversal.documentNo };
+    return { ok: true, reversalJournalEntryId: reversal.id, reversalDocumentNo: reversal.documentNo };
   }
 
   /**

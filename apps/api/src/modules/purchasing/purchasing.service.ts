@@ -1,28 +1,23 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  AuditAction,
+  InvoiceKind,
+  PartyType,
+  PurchaseOrderStatus,
+  StockMoveType,
+  SupplierInvoiceStatus,
+  VatRateCode,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { DocNoService } from '../common/sequence/docno.service';
-import { AuditAction, InvoiceKind, PartyType, PurchaseOrderStatus, StockMoveType, SupplierInvoiceStatus, VatRateCode } from '@prisma/client';
-import { formatGrnNo, formatPoNo, formatSupplierInvNo } from './docno';
 import { InventoryService } from '../inventory/inventory.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { PostingLockService } from '../finance/posting-lock.service';
 import { JwtAccessPayload } from '../../common/types/auth.types';
 import { CreateSupplierInvoiceNoteDto } from './dto/create-supplier-invoice-note.dto';
-import { sumInvoice } from '../sales/sales.posting.helpers';
 import { vatRateFromCode } from '../common/vat/vat-rate';
 import { computeLineTotals } from '../common/invoice/line-totals';
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
 
 @Injectable()
 export class PurchasingService {
@@ -35,31 +30,14 @@ export class PurchasingService {
     private readonly postingLock: PostingLockService,
   ) {}
 
-  private async nextPoNo(date: Date) {
-    const count = await this.prisma.purchaseOrder.count({
-      where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } },
-    });
-    return formatPoNo(date, count + 1);
-  }
-
-  private async nextGrnNo(date: Date) {
-    const count = await this.prisma.purchaseReceipt.count({
-      where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } },
-    });
-    return formatGrnNo(date, count + 1);
-  }
-
-  private async nextSupplierInvNo(date: Date) {
-    const count = await this.prisma.supplierInvoice.count({
-      where: { documentDate: { gte: startOfDay(date), lte: endOfDay(date) } },
-    });
-    return formatSupplierInvNo(date, count + 1);
-  }
-
   private async getAccountByCode(code: string) {
     const a = await this.prisma.account.findUnique({ where: { code } });
     if (!a) throw new BadRequestException(`Missing required account code ${code}`);
     return a;
+  }
+
+  private sumReceiptNet(lines: Array<{ lineSubtotal: any }>) {
+    return lines.reduce((s, l) => s + Number(l.lineSubtotal ?? 0), 0);
   }
 
   async listPOs() {
@@ -83,7 +61,7 @@ export class PurchasingService {
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
-    const docNo = await this.nextPoNo(docDate);
+    const docNo = await this.docNo.allocate('PO', docDate);
 
     // Validate lines
     for (const l of dto.lines) {
@@ -168,7 +146,6 @@ export class PurchasingService {
     if (!po) throw new NotFoundException('PO not found');
     if (po.status === PurchaseOrderStatus.CANCELED) throw new BadRequestException('PO canceled');
 
-    // In a strict process, require APPROVED. If you want faster, allow DRAFT too.
     if (po.status === PurchaseOrderStatus.DRAFT) {
       throw new ForbiddenException('PO must be approved before receiving');
     }
@@ -176,35 +153,35 @@ export class PurchasingService {
     if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Receipt must have lines');
 
     // Validate each receipt line references a PO line and does not exceed ordered qty minus already received.
-    // MVP approach: compute received per PO line from PurchaseReceiptLine totals.
+    // IMPORTANT: must aggregate by poLineId (professional), not by productId.
     const receivedAgg = await this.prisma.purchaseReceiptLine.groupBy({
-      by: ['productId'],
+      by: ['poLineId'],
       where: { receipt: { poId } },
       _sum: { quantity: true },
     });
 
-    const receivedByProduct = new Map<string, number>();
-    for (const r of receivedAgg) receivedByProduct.set(r.productId, Number(r._sum.quantity ?? 0));
+    const receivedByPoLineId = new Map<string, number>();
+    for (const r of receivedAgg) receivedByPoLineId.set(r.poLineId, Number(r._sum.quantity ?? 0));
 
-    // Map PO lines by id
     const poLineById = new Map(po.lines.map((l) => [l.id, l]));
 
     for (const rl of dto.lines) {
       const poLine = poLineById.get(rl.poLineId);
       if (!poLine) throw new BadRequestException('Invalid poLineId');
 
-      const already = receivedByProduct.get(poLine.productId) ?? 0;
+      const already = receivedByPoLineId.get(poLine.id) ?? 0;
       const newQty = Number(rl.quantity);
       if (newQty <= 0) throw new BadRequestException('Receipt quantity must be > 0');
+
       if (already + newQty > Number(poLine.quantity) + 1e-9) {
-        throw new BadRequestException(`Receiving exceeds ordered qty for product ${poLine.productId}`);
+        throw new BadRequestException(`Receiving exceeds ordered qty for poLineId=${poLine.id}`);
       }
     }
 
     const now = new Date();
-    const grnNo = await this.nextGrnNo(now);
+    const grnNo = await this.docNo.allocate('GRN', now);
 
-    // Create receipt + create inventory stock move and post it
+    // Create receipt with valuation fields (poLineId, unitPrice, vatCode, lineSubtotal)
     const receipt = await this.prisma.$transaction(async (tx) => {
       const createdReceipt = await tx.purchaseReceipt.create({
         data: {
@@ -217,10 +194,19 @@ export class PurchasingService {
           lines: {
             create: dto.lines.map((rl: any) => {
               const poLine = poLineById.get(rl.poLineId)!;
+
+              const qty = Number(rl.quantity);
+              const unitPrice = Number(poLine.unitPrice);
+              const lineSubtotal = qty * unitPrice;
+
               return {
+                poLineId: poLine.id,
                 productId: poLine.productId,
                 unitId: poLine.unitId,
                 quantity: rl.quantity,
+                unitPrice: poLine.unitPrice,
+                vatCode: poLine.vatCode,
+                lineSubtotal: lineSubtotal.toFixed(2),
                 notes: rl.notes,
               };
             }),
@@ -253,7 +239,84 @@ export class PurchasingService {
       data: { stockMoveId: move.id },
     });
 
-    // Update PO status (simple heuristic based on total received vs total ordered)
+    // --- Accounting: GRNI accrual at receipt time ---
+    const net = this.sumReceiptNet(receipt.lines);
+    if (net > 0) {
+      const accInv = await this.getAccountByCode('150');
+      const accGrni = await this.getAccountByCode('327');
+
+      const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+        documentDate: receipt.documentDate,
+        description: `GRNI accrual for receipt ${receipt.documentNo} (PO ${po.documentNo})`,
+        sourceType: 'PurchaseReceipt',
+        sourceId: receipt.id,
+        lines: [
+          {
+            accountId: accInv.id,
+            partyId: po.supplierId,
+            description: `GRN ${receipt.documentNo} Inventory receipt`,
+            debit: net.toFixed(2),
+            credit: '0',
+            currencyCode: po.currencyCode,
+            amountCurrency: net.toFixed(2),
+          },
+          {
+            accountId: accGrni.id,
+            partyId: po.supplierId,
+            description: `GRN ${receipt.documentNo} GRNI accrual`,
+            debit: '0',
+            credit: net.toFixed(2),
+            currencyCode: po.currencyCode,
+            amountCurrency: net.toFixed(2),
+          },
+        ],
+      });
+
+      await this.audit.log({
+        actorId: actor.sub,
+        action: AuditAction.POST,
+        entity: 'PurchaseReceipt',
+        entityId: receipt.id,
+        after: { journalEntryId: je.id, net: net.toFixed(2) },
+        message: `Posted GRNI for receipt ${receipt.documentNo} with JE ${je.documentNo}`,
+      });
+    }
+
+    // --- Step 19 prerequisite: update weighted average cost (WAC) ---
+    // NOTE: This requires Prisma schema to have InventoryCost + @@unique([productId, warehouseId])
+    for (const l of receipt.lines) {
+      const qty = Number(l.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+
+      const unitCost = Number(l.lineSubtotal) / qty;
+
+      // onhand AFTER posting already includes this receipt qty
+      const sums = await this.prisma.stockLedgerEntry.aggregate({
+        where: { warehouseId: po.warehouseId, productId: l.productId },
+        _sum: { quantityIn: true, quantityOut: true },
+      });
+      const onHandAfter = Number(sums._sum.quantityIn ?? 0) - Number(sums._sum.quantityOut ?? 0);
+      const onHandBefore = onHandAfter - qty;
+
+      const existing = await this.prisma.inventoryCost.findUnique({
+        where: { productId_warehouseId: { productId: l.productId, warehouseId: po.warehouseId } },
+      });
+      const oldAvg = existing ? Number(existing.avgUnitCost) : 0;
+
+      const denom = onHandBefore + qty;
+      const newAvg =
+        denom <= 0
+          ? unitCost
+          : ((onHandBefore * oldAvg) + (qty * unitCost)) / denom;
+
+      await this.prisma.inventoryCost.upsert({
+        where: { productId_warehouseId: { productId: l.productId, warehouseId: po.warehouseId } },
+        update: { avgUnitCost: newAvg.toFixed(6) },
+        create: { productId: l.productId, warehouseId: po.warehouseId, avgUnitCost: newAvg.toFixed(6) },
+      });
+    }
+
+    // Update PO status (based on total received vs total ordered)
     const orderedAgg = po.lines.reduce((sum, l) => sum + Number(l.quantity), 0);
     const totalReceivedAgg = await this.prisma.purchaseReceiptLine.aggregate({
       where: { receipt: { poId } },
@@ -306,8 +369,51 @@ export class PurchasingService {
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     if (dto.poId) {
-      const po = await this.prisma.purchaseOrder.findUnique({ where: { id: dto.poId } });
+      const po = await this.prisma.purchaseOrder.findUnique({ where: { id: dto.poId }, include: { lines: true } });
       if (!po) throw new BadRequestException('Invalid poId');
+
+      const poLineIds = po.lines.map((l) => l.id);
+      const poLineById = new Map(po.lines.map((l) => [l.id, l]));
+
+      // received quantities per poLineId
+      const recv = await this.prisma.purchaseReceiptLine.groupBy({
+        by: ['poLineId'],
+        where: { receipt: { poId: dto.poId } },
+        _sum: { quantity: true },
+      });
+      const receivedByPoLineId = new Map<string, number>();
+      for (const r of recv) receivedByPoLineId.set(r.poLineId, Number(r._sum.quantity ?? 0));
+
+      // already invoiced quantities per poLineId (POSTED invoices only)
+      const invAgg = await this.prisma.supplierInvoiceLine.groupBy({
+        by: ['poLineId'],
+        where: {
+          poLineId: { in: poLineIds },
+          invoice: { status: 'POSTED' as any },
+        },
+        _sum: { quantity: true },
+      });
+      const invoicedByPoLineId = new Map<string, number>();
+      for (const r of invAgg) if (r.poLineId) invoicedByPoLineId.set(r.poLineId, Number(r._sum.quantity ?? 0));
+
+      for (const l of dto.lines) {
+        if (!l.poLineId) throw new BadRequestException('poLineId is required when poId is provided');
+
+        const poLine = poLineById.get(l.poLineId);
+        if (!poLine) throw new BadRequestException('Invalid poLineId for this PO');
+
+        if (l.productId && l.productId !== poLine.productId) {
+          throw new BadRequestException('Invoice line productId must match PO line productId');
+        }
+
+        const receivedQty = receivedByPoLineId.get(poLine.id) ?? 0;
+        const alreadyInv = invoicedByPoLineId.get(poLine.id) ?? 0;
+        const newQty = Number(l.quantity);
+
+        if (alreadyInv + newQty > receivedQty + 1e-9) {
+          throw new BadRequestException(`Invoicing exceeds received qty for poLineId=${poLine.id}`);
+        }
+      }
     }
 
     // Validate products if provided
@@ -322,7 +428,7 @@ export class PurchasingService {
       await this.vatPercent(l.vatCode);
     }
 
-    // Calculate totals (money amounts as decimals -> store as strings)
+    // Calculate totals
     let subtotal = 0;
     let vatTotal = 0;
 
@@ -340,6 +446,7 @@ export class PurchasingService {
       vatTotal += lineVat;
 
       lineComputed.push({
+        poLineId: dto.poId ? (l.poLineId ?? null) : null,
         productId: l.productId ?? null,
         description: l.description,
         quantity: l.quantity,
@@ -354,7 +461,7 @@ export class PurchasingService {
     const grandTotal = subtotal + vatTotal;
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
-    const docNo = await this.nextSupplierInvNo(docDate);
+    const docNo = await this.docNo.allocate('SI', docDate);
 
     const created = await this.prisma.supplierInvoice.create({
       data: {
@@ -422,19 +529,16 @@ export class PurchasingService {
             const qty = Number(l.quantity);
             const price = Number(l.unitPrice);
             const vatCode = l.vatCode as VatRateCode;
-            
-            // You already compute totals; keep it
+
             const vatRate = vatRateFromCode(vatCode);
             const totals = computeLineTotals(qty, price, vatRate);
-            
+
             return {
-              // IMPORTANT: connect relation, do NOT set productId
               ...(l.productId ? { product: { connect: { id: l.productId } } } : {}),
-              
               description: l.description,
-              quantity: l.quantity,        // ok as string (Prisma Decimal)
-              unitPrice: l.unitPrice,      // ok as string
-              vatCode,                     // this links to VatRate via relation fields
+              quantity: l.quantity,
+              unitPrice: l.unitPrice,
+              vatCode,
               lineSubtotal: totals.lineSubtotal,
               lineVat: totals.lineVat,
               lineTotal: totals.lineTotal,
@@ -457,7 +561,6 @@ export class PurchasingService {
     return created;
   }
 
-
   async postSupplierInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.supplierInvoice.findUnique({
       where: { id },
@@ -473,83 +576,141 @@ export class PurchasingService {
       overrideReason,
     );
 
-    // VAT rates: use same VAT code list
-    const linesWithRate = inv.lines.map((l) => ({
-      quantity: Number(l.quantity),
-      unitPrice: Number(l.unitPrice),
-      vatRate: vatRateFromCode(l.vatCode as VatRateCode),
-    }));
-
     const net = inv.lines.reduce((s, l) => s + Number(l.lineSubtotal), 0);
     const vat = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
     const total = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
 
-    const accAP = await this.prisma.account.findUnique({ where: { code: '320' } });
-    const accExp = await this.prisma.account.findUnique({ where: { code: '770' } });
-    const accVatIn = await this.prisma.account.findUnique({ where: { code: '191' } });
-    if (!accAP || !accExp || !accVatIn) throw new BadRequestException('Missing required accounts (320,770,191)');
-    
+    const accAP = await this.getAccountByCode('320');
+    const accVatIn = await this.getAccountByCode('191');
+    const accExp = await this.getAccountByCode('770');
+    const accGrni = await this.getAccountByCode('327');
+
     const isCredit = inv.kind === InvoiceKind.CREDIT_NOTE;
+
+    // PO-matched invoice? => use GRNI model
+    const hasPoMatch = !!inv.poId && inv.lines.some((l: any) => !!l.poLineId);
+
     const journalLines: any[] = [];
 
-    if (!isCredit) {
-      // INVOICE / DEBIT_NOTE: Dr Expense, Dr VAT In, Cr AP
-      journalLines.push({
-        accountId: accExp.id,
-        partyId: inv.supplierId,
-        description: `${inv.kind} ${inv.documentNo} Expense`,
-        debit: net.toFixed(2),
-        credit: '0',
-        currencyCode: inv.currencyCode,
-        amountCurrency: net.toFixed(2),
-      });
-      journalLines.push({
-        accountId: accVatIn.id,
-        partyId: inv.supplierId,
-        description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
-        debit: vat.toFixed(2),
-        credit: '0',
-        currencyCode: inv.currencyCode,
-        amountCurrency: vat.toFixed(2),
-      });
-      journalLines.push({
-        accountId: accAP.id,
-        partyId: inv.supplierId,
-        description: `${inv.kind} ${inv.documentNo} AP`,
-        debit: '0',
-        credit: total.toFixed(2),
-        currencyCode: inv.currencyCode,
-        amountCurrency: total.toFixed(2),
-      });
+    if (hasPoMatch) {
+      if (!isCredit) {
+        // Dr GRNI (net), Dr VAT in, Cr AP (total)
+        journalLines.push({
+          accountId: accGrni.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} GRNI clearing`,
+          debit: net.toFixed(2),
+          credit: '0',
+          currencyCode: inv.currencyCode,
+          amountCurrency: net.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accVatIn.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
+          debit: vat.toFixed(2),
+          credit: '0',
+          currencyCode: inv.currencyCode,
+          amountCurrency: vat.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accAP.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} AP`,
+          debit: '0',
+          credit: total.toFixed(2),
+          currencyCode: inv.currencyCode,
+          amountCurrency: total.toFixed(2),
+        });
+      } else {
+        // CREDIT_NOTE: Dr AP, Cr GRNI, Cr VAT
+        journalLines.push({
+          accountId: accAP.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} AP reversal`,
+          debit: total.toFixed(2),
+          credit: '0',
+          currencyCode: inv.currencyCode,
+          amountCurrency: total.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accGrni.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} GRNI reversal`,
+          debit: '0',
+          credit: net.toFixed(2),
+          currencyCode: inv.currencyCode,
+          amountCurrency: net.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accVatIn.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} VAT reversal`,
+          debit: '0',
+          credit: vat.toFixed(2),
+          currencyCode: inv.currencyCode,
+          amountCurrency: vat.toFixed(2),
+        });
+      }
     } else {
-      // CREDIT_NOTE reverses: Dr AP, Cr Expense, Cr VAT In
-      journalLines.push({
-        accountId: accAP.id,
-        partyId: inv.supplierId,
-        description: `${inv.kind} ${inv.documentNo} AP reversal`,
-        debit: total.toFixed(2),
-        credit: '0',
-        currencyCode: inv.currencyCode,
-        amountCurrency: total.toFixed(2),
-      });
-      journalLines.push({
-        accountId: accExp.id,
-        partyId: inv.supplierId,
-        description: `${inv.kind} ${inv.documentNo} Expense reversal`,
-        debit: '0',
-        credit: net.toFixed(2),
-        currencyCode: inv.currencyCode,
-        amountCurrency: net.toFixed(2),
-      });
-      journalLines.push({
-        accountId: accVatIn.id,
-        partyId: inv.supplierId,
-        description: `${inv.kind} ${inv.documentNo} VAT reversal`,
-        debit: '0',
-        credit: vat.toFixed(2),
-        currencyCode: inv.currencyCode,
-        amountCurrency: vat.toFixed(2),
-      });
+      // Unmatched/service model: 770/191/320
+      if (!isCredit) {
+        journalLines.push({
+          accountId: accExp.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} Expense`,
+          debit: net.toFixed(2),
+          credit: '0',
+          currencyCode: inv.currencyCode,
+          amountCurrency: net.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accVatIn.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
+          debit: vat.toFixed(2),
+          credit: '0',
+          currencyCode: inv.currencyCode,
+          amountCurrency: vat.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accAP.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} AP`,
+          debit: '0',
+          credit: total.toFixed(2),
+          currencyCode: inv.currencyCode,
+          amountCurrency: total.toFixed(2),
+        });
+      } else {
+        journalLines.push({
+          accountId: accAP.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} AP reversal`,
+          debit: total.toFixed(2),
+          credit: '0',
+          currencyCode: inv.currencyCode,
+          amountCurrency: total.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accExp.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} Expense reversal`,
+          debit: '0',
+          credit: net.toFixed(2),
+          currencyCode: inv.currencyCode,
+          amountCurrency: net.toFixed(2),
+        });
+        journalLines.push({
+          accountId: accVatIn.id,
+          partyId: inv.supplierId,
+          description: `${inv.kind} ${inv.documentNo} VAT reversal`,
+          debit: '0',
+          credit: vat.toFixed(2),
+          currencyCode: inv.currencyCode,
+          amountCurrency: vat.toFixed(2),
+        });
+      }
     }
 
     const posted = await this.prisma.$transaction(async (tx) => {
@@ -568,106 +729,13 @@ export class PurchasingService {
 
       return { upd, je };
     });
-    
-    /*// Accounts
-    const accInventory = await this.getAccountByCode('150');
-    const accExpense = await this.getAccountByCode('770');
-
-    // Build journal lines
-    // Debit goods/services subtotal split (product vs non-product)
-    let productSubtotal = 0;
-    let nonProductSubtotal = 0;
-    for (const l of inv.lines) {
-      const sub = Number(l.lineSubtotal);
-      if (l.productId) productSubtotal += sub;
-      else nonProductSubtotal += sub;
-    }
-
-    const vatTotal = Number(inv.vatTotal);
-    const grandTotal = Number(inv.grandTotal);
-
-    const journalLines: any[] = [];
-
-    if (productSubtotal > 0) {
-      journalLines.push({
-        accountId: accInventory.id,
-        description: `Supplier invoice ${inv.documentNo} goods`,
-        debit: productSubtotal.toFixed(2),
-        credit: '0',
-        currencyCode: inv.currencyCode,
-        amountCurrency: productSubtotal.toFixed(2),
-        partyId: inv.supplierId,
-      });
-    }
-
-    if (nonProductSubtotal > 0) {
-      journalLines.push({
-        accountId: accExpense.id,
-        description: `Supplier invoice ${inv.documentNo} services/expenses`,
-        debit: nonProductSubtotal.toFixed(2),
-        credit: '0',
-        currencyCode: inv.currencyCode,
-        amountCurrency: nonProductSubtotal.toFixed(2),
-        partyId: inv.supplierId,
-      });
-    }
-
-    if (vatTotal > 0) {
-      journalLines.push({
-        accountId: accVatIn.id,
-        description: `KDV input ${inv.documentNo}`,
-        debit: vatTotal.toFixed(2),
-        credit: '0',
-        currencyCode: inv.currencyCode,
-        amountCurrency: vatTotal.toFixed(2),
-        partyId: inv.supplierId,
-      });
-    }
-
-    // Credit AP
-    journalLines.push({
-      accountId: accAP.id,
-      description: `AP ${inv.supplier.name} (${inv.documentNo})`,
-      debit: '0',
-      credit: grandTotal.toFixed(2),
-      currencyCode: inv.currencyCode,
-      amountCurrency: grandTotal.toFixed(2),
-      partyId: inv.supplierId,
-    });
-
-    // Validate balance quickly
-    const debit = journalLines.reduce((s, l) => s + Number(l.debit), 0);
-    const credit = journalLines.reduce((s, l) => s + Number(l.credit), 0);
-    if (Math.abs(debit - credit) > 0.005) {
-      throw new BadRequestException(`Auto journal not balanced. debit=${debit}, credit=${credit}`);
-    }
-
-    const invPosted = await this.prisma.$transaction(async (tx) => {
-      const locked = await tx.supplierInvoice.findUnique({ where: { id } });
-      if (!locked) throw new NotFoundException('SupplierInvoice not found');
-      if (locked.status !== SupplierInvoiceStatus.DRAFT) throw new BadRequestException('Invoice already posted/canceled');
-
-      // Post invoice
-      return tx.supplierInvoice.update({
-        where: { id },
-        data: { status: SupplierInvoiceStatus.POSTED, postedAt: new Date(), postedById: actor.sub },
-      });
-    });
-
-    const je = await this.accounting.createPostedFromIntegration(actor.sub, {
-      documentDate: inv.documentDate,
-      description: `Supplier invoice ${inv.documentNo} posting`,
-      sourceType: 'SupplierInvoice',
-      sourceId: inv.id,
-      lines: journalLines,
-    });*/
 
     await this.audit.log({
       actorId: actor.sub,
       action: AuditAction.POST,
       entity: 'SupplierInvoice',
       entityId: inv.id,
-      after: { status: 'POSTED', journalEntryId: posted.je.id },
+      after: { status: 'POSTED', journalEntryId: posted.je.id, hasPoMatch },
       message: overrideReason
         ? `Posted Supplier Invoice ${inv.kind} ${inv.documentNo} (override reason: ${overrideReason}) and created JE ${posted.je.documentNo}`
         : `Posted Supplier Invoice ${inv.kind} ${inv.documentNo} and created JE ${posted.je.documentNo}`,

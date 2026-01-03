@@ -4,8 +4,8 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
-  const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@company.local';
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'ChangeMe123!';
+  const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com';
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'Welcome-123';
 
   // 1) permissions (start minimal; we will expand module-by-module)
   const permissions = [
@@ -180,6 +180,7 @@ async function main() {
     { code: '191', name: 'Deductible VAT (KDV)', type: 'ASSET' as const },
 
     { code: '320', name: 'Accounts Payable (AP)', type: 'LIABILITY' as const },
+    { code: '327', name: 'Goods Received Not Invoiced (GRNI)', type: 'LIABILITY' as const },
     { code: '391', name: 'VAT Payable (KDV)', type: 'LIABILITY' as const },
 
     { code: '600', name: 'Sales Revenue', type: 'REVENUE' as const },
@@ -219,6 +220,22 @@ async function main() {
     update: { startDate: start, endDate: end },
     create: { code, startDate: start, endDate: end, status: 'OPEN' },
   });
+
+  // --- NEW: initialize DocumentSequence rows for today (optional but recommended) ---
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const dayKey = `${y}${m}${d}`;
+
+  const seqCodes = ['JE', 'PO', 'GRN', 'SI', 'SO', 'DEL', 'PAY', 'MOV', 'CCN', 'CDN', 'SCN', 'SDN'];
+
+  for (const sc of seqCodes) {
+    await prisma.documentSequence.upsert({
+      where: { sequenceCode_periodKey: { sequenceCode: sc, periodKey: dayKey } },
+      update: {},
+      create: { sequenceCode: sc, periodKey: dayKey, nextNumber: 1 },
+    });
+  }
 
   console.log('Seed completed.');
   console.log('Admin email:', adminEmail);

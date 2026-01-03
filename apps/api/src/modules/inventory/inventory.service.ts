@@ -5,7 +5,7 @@ import { AuditService } from '../audit/audit.service';
 import { PostingLockService } from '../finance/posting-lock.service';
 import { JwtAccessPayload } from '../../common/types/auth.types';
 import { AuditAction, StockMoveStatus, StockMoveType } from '@prisma/client';
-import { formatStockMoveDocNo } from './stockmove-number';
+import { DocNoService } from '../common/sequence/docno.service';
 
 @Injectable()
 export class InventoryService {
@@ -14,6 +14,7 @@ export class InventoryService {
     private readonly audit: AuditService,
     private readonly config: ConfigService,
     private readonly postingLock: PostingLockService,
+    private readonly docNo: DocNoService,
   ) {}
 
   async listMoves() {
@@ -33,20 +34,6 @@ export class InventoryService {
     return move;
   }
 
-  private async nextDocNo(date: Date) {
-    // naive: count existing for date. OK for MVP; later replace with a DB sequence table.
-    const start = new Date(date);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(date);
-    end.setHours(23, 59, 59, 999);
-
-    const count = await this.prisma.stockMove.count({
-      where: { documentDate: { gte: start, lte: end } },
-    });
-
-    return formatStockMoveDocNo(date, count + 1);
-  }
-
   private validateWarehouses(type: StockMoveType, fromId?: string, toId?: string) {
     if (type === 'RECEIPT') {
       if (!toId) throw new BadRequestException('toWarehouseId required for RECEIPT');
@@ -60,9 +47,6 @@ export class InventoryService {
     }
     if (type === 'ADJUSTMENT') {
       if (!toId && !fromId) throw new BadRequestException('fromWarehouseId or toWarehouseId required for ADJUSTMENT');
-      // For ADJUSTMENT we’ll treat:
-      // - toWarehouseId set => positive adjustment (IN)
-      // - fromWarehouseId set => negative adjustment (OUT)
       if (fromId && toId) throw new BadRequestException('ADJUSTMENT must use only one warehouse (from OR to)');
     }
   }
@@ -92,7 +76,7 @@ export class InventoryService {
       if (!u) throw new BadRequestException('Invalid unitId');
     }
 
-    const docNo = await this.nextDocNo(documentDate);
+    const docNo = await this.docNo.allocate('MOV', documentDate);
 
     const created = await this.prisma.stockMove.create({
       data: {
@@ -196,11 +180,8 @@ export class InventoryService {
       }
     }
 
-    const postedAt = new Date();
-
     // Transaction: create ledger entries + mark POSTED
     const result = await this.prisma.$transaction(async (tx) => {
-      // Re-check status inside transaction for safety
       const locked = await tx.stockMove.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('StockMove not found');
       if (locked.status !== StockMoveStatus.DRAFT) throw new BadRequestException('Move already posted/canceled');
@@ -262,7 +243,7 @@ export class InventoryService {
 
       await tx.stockLedgerEntry.createMany({ data: ledgerCreates });
 
-      const updated = await this.prisma.stockMove.update({
+      const updated = await tx.stockMove.update({
         where: { id },
         data: {
           status: StockMoveStatus.POSTED,
@@ -283,12 +264,13 @@ export class InventoryService {
       after: { status: result.status, postedAt: result.postedAt, postedById: result.postedById },
       message: overrideReason
         ? `Posted stock move ${move.documentNo} (override reason: ${overrideReason})`
-        : `Posted JE ${move.documentNo}`
+        : `Posted stock move ${move.documentNo}`,
     });
 
     return { ok: true };
   }
-    async cancelMove(actorId: string, id: string) {
+
+  async cancelMove(actorId: string, id: string) {
     const move = await this.prisma.stockMove.findUnique({ where: { id } });
     if (!move) throw new NotFoundException('StockMove not found');
     if (move.status !== StockMoveStatus.DRAFT) {
@@ -340,13 +322,12 @@ export class InventoryService {
       fromWarehouseId = move.toWarehouseId;
       toWarehouseId = move.fromWarehouseId;
     } else if (move.type === 'ADJUSTMENT') {
-      // Swap from/to semantics
       reversalType = StockMoveType.ADJUSTMENT;
       fromWarehouseId = move.toWarehouseId;
       toWarehouseId = move.fromWarehouseId;
     }
 
-    const docNo = await this.nextDocNo(new Date());
+    const docNo = await this.docNo.allocate('MOV', new Date());
 
     const created = await this.prisma.stockMove.create({
       data: {
@@ -362,7 +343,7 @@ export class InventoryService {
           create: move.lines.map((l) => ({
             productId: l.productId,
             unitId: l.unitId,
-            quantity: l.quantity, // same quantity, direction changes by type/warehouse
+            quantity: l.quantity,
             notes: `Reversal line of ${l.id}`,
             lotNo: l.lotNo,
             serialNo: l.serialNo,

@@ -309,6 +309,78 @@ export class SalesService {
       data: { stockMoveId: move.id },
     });
 
+    // =========================
+    // STEP 19.3: COGS RECOGNITION
+    // =========================
+    const accCogs = await this.prisma.account.findUnique({ where: { code: '621' } });
+    const accInv = await this.prisma.account.findUnique({ where: { code: '150' } });
+    if (!accCogs || !accInv) throw new BadRequestException('Missing required accounts (621, 150)');
+
+    let totalCost = 0;
+
+    for (const l of delivery.lines) {
+      const qty = Number(l.quantity);
+
+      const costRow = await this.prisma.inventoryCost.findUnique({
+        where: { productId_warehouseId: { productId: l.productId, warehouseId: so.warehouseId } },
+      });
+      const avg = costRow ? Number(costRow.avgUnitCost) : 0;
+
+      // Professional rule: block delivery without known cost
+      if (!Number.isFinite(avg) || avg <= 0) {
+        throw new BadRequestException(
+          `Missing inventory cost for product ${l.productId} in warehouse ${so.warehouseId}. Receive goods first to establish cost.`,
+        );
+      }
+
+      totalCost += qty * avg;
+    }
+
+    totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
+
+    if (totalCost > 0) {
+      const journalLines: any[] = [
+        {
+          accountId: accCogs.id,
+          partyId: so.customerId,
+          description: `COGS for delivery ${delivery.documentNo} (SO ${so.documentNo})`,
+          debit: totalCost.toFixed(2),
+          credit: '0',
+          currencyCode: so.currencyCode,
+          amountCurrency: totalCost.toFixed(2),
+        },
+        {
+          accountId: accInv.id,
+          partyId: so.customerId,
+          description: `Inventory out for delivery ${delivery.documentNo} (SO ${so.documentNo})`,
+          debit: '0',
+          credit: totalCost.toFixed(2),
+          currencyCode: so.currencyCode,
+          amountCurrency: totalCost.toFixed(2),
+        },
+      ];
+
+      const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+        documentDate: delivery.documentDate,
+        description: `COGS posting for delivery ${delivery.documentNo}`,
+        sourceType: 'SalesDelivery',
+        sourceId: delivery.id,
+        lines: journalLines,
+      });
+
+      await this.audit.log({
+        actorId: actor.sub,
+        action: AuditAction.POST,
+        entity: 'SalesDelivery',
+        entityId: delivery.id,
+        after: { cogs: totalCost.toFixed(2), journalEntryId: je.id },
+        message: `Posted COGS for ${delivery.documentNo} with JE ${je.documentNo}`,
+      });
+    }
+    // =========================
+    // END STEP 19.3
+    // =========================
+
     // Update SO status
     const orderedAgg = so.lines.reduce((sum, l) => sum + Number(l.quantity), 0);
     const totalDeliveredAgg = await this.prisma.salesDeliveryLine.aggregate({
