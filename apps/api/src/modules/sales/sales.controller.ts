@@ -11,6 +11,7 @@ import { CreateCustomerInvoiceDto } from './dto/create-customer-invoice.dto';
 import { ApproveSalesOrderDto } from './dto/approve-sales-order.dto';
 import { PostingOverrideDto } from '../common/dto/posting-override.dto';
 import { CreateInvoiceNoteDto } from './dto/create-invoice-note.dto';
+import { CreateSalesReturnDto } from './dto/create-sales-return.dto';
 
 @Controller('sales')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
@@ -43,6 +44,12 @@ export class SalesController {
   @RequirePermissions('sales.order.deliver')
   deliver(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: DeliverSalesOrderDto) {
     return this.service.deliverOrder(actor, id, dto);
+  }
+
+  @Post('deliveries/:id/return')
+  @RequirePermissions('sales.order.deliver')
+  createReturn(@CurrentUser() actor: JwtAccessPayload, @Param('id') deliveryId: string, @Body() dto: CreateSalesReturnDto) {
+    return this.service.createSalesReturn(actor, deliveryId, dto);
   }
 
   @Get('invoices')

@@ -16,6 +16,7 @@ import { PostingLockService } from '../finance/posting-lock.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceNoteDto } from './dto/create-invoice-note.dto';
+import { CreateSalesReturnDto } from './dto/create-sales-return.dto';
 
 function round2(n: number) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
@@ -309,6 +310,48 @@ export class SalesService {
       data: { stockMoveId: move.id },
     });
 
+    // after delivery is created and move is posted and stockMoveId is set
+
+    // --- Persist delivery cost snapshot (unitCost/lineCost) ---
+    const costUpdates: Array<{ id: string; unitCost: string; lineCost: string }> = [];
+
+    for (const l of delivery.lines) {
+      const qty = Number(l.quantity);
+
+      const costRow = await this.prisma.inventoryCost.findUnique({
+        where: { productId_warehouseId: { productId: l.productId, warehouseId: so.warehouseId } },
+      });
+      const avg = costRow ? Number(costRow.avgUnitCost) : 0;
+
+      if (!Number.isFinite(avg) || avg <= 0) {
+        throw new BadRequestException(
+          `Missing inventory cost for product ${l.productId} in warehouse ${so.warehouseId}. Receive goods first to establish cost.`,
+        );
+      }
+
+      const lineCost = Math.round((qty * avg + Number.EPSILON) * 100) / 100;
+
+      costUpdates.push({
+        id: l.id,
+        unitCost: avg.toFixed(6),
+        lineCost: lineCost.toFixed(2),
+      });
+    }
+
+    // write snapshot
+    await this.prisma.$transaction(
+      costUpdates.map((u) =>
+        this.prisma.salesDeliveryLine.update({
+          where: { id: u.id },
+          data: { unitCost: u.unitCost as any, lineCost: u.lineCost as any },
+        }),
+      ),
+    );
+
+    // compute totalCost from snapshot (authoritative)
+    let totalCost = costUpdates.reduce((s, u) => s + Number(u.lineCost), 0);
+    totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
+
     // =========================
     // STEP 19.3: COGS RECOGNITION
     // =========================
@@ -408,6 +451,164 @@ export class SalesService {
     });
 
     return { deliveryId: delivery.id, stockMoveId: move.id };
+  }
+
+  async createSalesReturn(actor: JwtAccessPayload, deliveryId: string, dto: CreateSalesReturnDto) {
+    const delivery = await this.prisma.salesDelivery.findUnique({
+      where: { id: deliveryId },
+      include: {
+        so: true,
+        lines: true,
+      },
+    });
+    if (!delivery) throw new NotFoundException('SalesDelivery not found');
+
+    if (!dto.lines?.length) throw new BadRequestException('Return must have lines');
+
+    // Must have cost snapshot present (professional enforcement)
+    const deliveryLineById = new Map(delivery.lines.map((l) => [l.id, l]));
+
+    // Prevent returning more than delivered (per product, using SalesReturnLine + SalesDeliveryLine sums)
+    const returnedAgg = await this.prisma.salesReturnLine.groupBy({
+      by: ['productId'],
+      where: { salesReturn: { deliveryId } },
+      _sum: { quantity: true },
+    });
+    const returnedByProduct = new Map<string, number>();
+    for (const r of returnedAgg) returnedByProduct.set(r.productId, Number(r._sum.quantity ?? 0));
+
+    for (const rl of dto.lines) {
+      const dl = deliveryLineById.get(rl.deliveryLineId);
+      if (!dl) throw new BadRequestException('Invalid deliveryLineId');
+
+      const newQty = Number(rl.quantity);
+      if (newQty <= 0) throw new BadRequestException('Return quantity must be > 0');
+
+      const already = returnedByProduct.get(dl.productId) ?? 0;
+      const deliveredQty = Number(dl.quantity);
+
+      if (already + newQty > deliveredQty + 1e-9) {
+        throw new BadRequestException('Returning exceeds delivered quantity');
+      }
+
+      if (dl.unitCost === null || dl.lineCost === null) {
+        throw new BadRequestException(`Delivery line ${dl.id} is missing cost snapshot; cannot return`);
+      }
+    }
+
+    const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
+    await this.postingLock.assertPostingAllowed(
+      actor,
+      docDate,
+      `Sales.createSalesReturn deliveryId=${delivery.id}`,
+      undefined,
+    );
+
+    const docNo = await this.docNo.allocate('SRN', docDate);
+
+    // Create SalesReturn + lines (copy unitCost/lineCost from delivery snapshot proportionally)
+    const createdReturn = await this.prisma.salesReturn.create({
+      data: {
+        documentNo: docNo,
+        documentDate: docDate,
+        deliveryId: delivery.id,
+        warehouseId: delivery.warehouseId,
+        reason: dto.reason,
+        notes: dto.notes,
+        createdById: actor.sub,
+        lines: {
+          create: dto.lines.map((rl) => {
+            const dl = deliveryLineById.get(rl.deliveryLineId)!;
+            const qty = Number(rl.quantity);
+            
+            const deliveredQty = Number(dl.quantity);
+            const deliveredLineCost = Number(dl.lineCost);
+            
+            // proportional cost for partial return
+            const ratio = qty / deliveredQty;
+            const lineCost = Math.round((deliveredLineCost * ratio + Number.EPSILON) * 100) / 100;
+
+            return {
+              productId: dl.productId,
+              unitId: dl.unitId,
+              quantity: rl.quantity,
+              unitCost: dl.unitCost!, // keep original unitCost snapshot
+              lineCost: lineCost.toFixed(2),
+              notes: rl.notes,
+            };
+          }),
+        },
+      },
+      include: { lines: true, delivery: { include: { so: true } } },
+    });
+
+    // Create and post inventory RECEIPT back into warehouse
+    const move = await this.inventory.createMove(actor.sub, {
+      type: StockMoveType.RECEIPT,
+      toWarehouseId: createdReturn.warehouseId,
+      documentDate: docDate.toISOString(),
+      notes: `Sales return ${createdReturn.documentNo} for delivery ${delivery.documentNo}`,
+      lines: createdReturn.lines.map((l) => ({
+        productId: l.productId,
+        unitId: l.unitId,
+        quantity: l.quantity.toString(),
+        notes: l.notes,
+      })),
+    });
+
+    await this.inventory.postMove(actor, move.id);
+
+    await this.prisma.salesReturn.update({
+      where: { id: createdReturn.id },
+      data: { stockMoveId: move.id },
+    });
+
+    // Reverse COGS using snapshot costs
+    const totalCost = createdReturn.lines.reduce((s, l) => s + Number(l.lineCost), 0);
+
+    const accInv = await this.prisma.account.findUnique({ where: { code: '150' } });
+    const accCogs = await this.prisma.account.findUnique({ where: { code: '621' } });
+    if (!accInv || !accCogs) throw new BadRequestException('Missing required accounts (150, 621)');
+
+    const journalLines: any[] = [
+      {
+        accountId: accInv.id,
+        partyId: createdReturn.delivery.so.customerId,
+        description: `Inventory back from sales return ${createdReturn.documentNo}`,
+        debit: totalCost.toFixed(2),
+        credit: '0',
+        currencyCode: createdReturn.delivery.so.currencyCode,
+        amountCurrency: totalCost.toFixed(2),
+      },
+      {
+        accountId: accCogs.id,
+        partyId: createdReturn.delivery.so.customerId,
+        description: `Reverse COGS for sales return ${createdReturn.documentNo}`,
+        debit: '0',
+        credit: totalCost.toFixed(2),
+        currencyCode: createdReturn.delivery.so.currencyCode,
+        amountCurrency: totalCost.toFixed(2),
+      },
+    ];
+
+    const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+      documentDate: createdReturn.documentDate,
+      description: `Sales return ${createdReturn.documentNo} (delivery ${delivery.documentNo})`,
+      sourceType: 'SalesReturn',
+      sourceId: createdReturn.id,
+      lines: journalLines,
+    });
+
+    await this.audit.log({
+      actorId: actor.sub,
+      action: AuditAction.POST,
+      entity: 'SalesReturn',
+      entityId: createdReturn.id,
+      after: { stockMoveId: move.id, journalEntryId: je.id },
+      message: `Posted sales return ${createdReturn.documentNo} with JE ${je.documentNo}. Reason: ${dto.reason}`,
+    });
+
+    return { ok: true, salesReturnId: createdReturn.id, stockMoveId: move.id, journalEntryId: je.id };
   }
 
   private async vatPercent(vatCode: VatRateCode): Promise<number> {

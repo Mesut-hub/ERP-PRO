@@ -8,17 +8,18 @@ datasource db {
 }
 
 model User {
-  id              String           @id @default(cuid())
-  email           String           @unique
-  fullName        String
-  passwordHash    String
-  status          UserStatus       @default(ACTIVE)
-  preferredLocale String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  auditLogs       AuditLog[]       @relation("AuditActor")
-  sessions        RefreshSession[]
-  roles           UserRole[]
+  id                  String           @id @default(cuid())
+  email               String           @unique
+  fullName            String
+  passwordHash        String
+  status              UserStatus       @default(ACTIVE)
+  preferredLocale     String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  auditLogs           AuditLog[]       @relation("AuditActor")
+  sessions            RefreshSession[]
+  roles               UserRole[]
+  salesReturnsCreated SalesReturn[]    @relation("SalesReturnCreatedBy")
 
   fiscalPeriodsClosed FiscalPeriod[] @relation("FiscalPeriodClosedBy")
   paymentsVoided      Payment[]      @relation("PaymentVoidedBy")
@@ -194,8 +195,9 @@ model Unit {
   purchaseOrderLines   PurchaseOrderLine[]
   purchaseReceiptLines PurchaseReceiptLine[]
 
-  soLines       SalesOrderLine[]
-  deliveryLines SalesDeliveryLine[]
+  soLines          SalesOrderLine[]
+  deliveryLines    SalesDeliveryLine[]
+  salesReturnLines SalesReturnLine[]   @relation("SalesReturnLineUnit")
 
   productsAsBaseUnit Product[]
 }
@@ -319,6 +321,7 @@ model Product {
 
   stockMoveLines     StockMoveLine[]
   stockLedgerEntries StockLedgerEntry[]
+  salesReturnLines   SalesReturnLine[]  @relation("SalesReturnLineProduct")
 
   //stockLedger    StockLedgerEntry[]
 
@@ -402,6 +405,7 @@ model Warehouse {
 
   salesOrders     SalesOrder[]
   salesDeliveries SalesDelivery[]
+  salesReturns    SalesReturn[]   @relation("SalesReturnWarehouse")
 
   locations      WarehouseLocation[]
   movesFrom      StockMove[]         @relation("FromWarehouse")
@@ -461,6 +465,7 @@ model StockMove {
   ledgerEntries   StockLedgerEntry[]
   purchaseReceipt PurchaseReceipt?
   salesDelivery   SalesDelivery?
+  salesReturn     SalesReturn?       @relation("SalesReturnStockMove")
 
   @@index([type, status])
   @@index([documentDate])
@@ -860,7 +865,8 @@ model SalesDelivery {
 
   createdBy User? @relation("SdCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
-  lines SalesDeliveryLine[]
+  lines   SalesDeliveryLine[]
+  returns SalesReturn[]       @relation("SalesReturnDelivery")
 
   @@index([soId])
   @@index([documentDate])
@@ -873,6 +879,10 @@ model SalesDeliveryLine {
   productId String
   unitId    String
   quantity  Decimal @db.Decimal(18, 4)
+
+  // NEW: delivery cost snapshot (base currency)
+  unitCost Decimal? @db.Decimal(18, 6)
+  lineCost Decimal? @db.Decimal(18, 2)
 
   notes String?
 
@@ -1071,6 +1081,54 @@ model InventoryCost {
 
   @@unique([productId, warehouseId])
   @@index([warehouseId])
+}
+
+model SalesReturn {
+  id           String   @id @default(cuid())
+  documentNo   String   @unique
+  documentDate DateTime @default(now())
+
+  deliveryId  String
+  warehouseId String
+  stockMoveId String? @unique
+
+  reason      String
+  notes       String?
+  createdById String?
+
+  createdAt DateTime @default(now())
+
+  delivery  SalesDelivery @relation("SalesReturnDelivery", fields: [deliveryId], references: [id], onDelete: Restrict)
+  warehouse Warehouse     @relation("SalesReturnWarehouse", fields: [warehouseId], references: [id], onDelete: Restrict)
+  stockMove StockMove?    @relation("SalesReturnStockMove", fields: [stockMoveId], references: [id], onDelete: SetNull)
+
+  createdBy User? @relation("SalesReturnCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  lines SalesReturnLine[]
+
+  @@index([deliveryId])
+  @@index([documentDate])
+}
+
+model SalesReturnLine {
+  id       String @id @default(cuid())
+  returnId String
+
+  productId String
+  unitId    String
+  quantity  Decimal @db.Decimal(18, 4)
+
+  unitCost Decimal @db.Decimal(18, 6)
+  lineCost Decimal @db.Decimal(18, 2)
+
+  notes String?
+
+  salesReturn SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product     Product     @relation("SalesReturnLineProduct", fields: [productId], references: [id], onDelete: Restrict)
+  unit        Unit        @relation("SalesReturnLineUnit", fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@index([returnId])
+  @@index([productId])
 }
 
 //////////////////////////////////////////////////////
