@@ -58,6 +58,8 @@ async function main() {
     'sales.invoice.manage',
     'sales.invoice.post',
     'sales.order.read',
+    'sales.return.manage',
+    'sales.delivery.cost.backfill',
 
     'sales.credit.override',
 

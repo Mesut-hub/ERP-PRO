@@ -348,6 +348,14 @@ export class SalesService {
       ),
     );
 
+    const verify = await this.prisma.salesDeliveryLine.findMany({
+      where: { deliveryId: delivery.id },
+      select: { id: true, unitCost: true, lineCost: true },
+    });
+    if (verify.some(v => v.unitCost === null || v.lineCost === null)) {
+      throw new BadRequestException('Failed to persist delivery cost snapshot');
+    }
+
     // compute totalCost from snapshot (authoritative)
     let totalCost = costUpdates.reduce((s, u) => s + Number(u.lineCost), 0);
     totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
@@ -426,6 +434,79 @@ export class SalesService {
     });
 
     return { deliveryId: delivery.id, stockMoveId: move.id };
+  }
+
+  async backfillDeliveryCostSnapshot(actor: JwtAccessPayload, deliveryId: string) {
+    const delivery = await this.prisma.salesDelivery.findUnique({
+      where: { id: deliveryId },
+      include: { lines: true, so: true },
+    });
+    if (!delivery) throw new NotFoundException('SalesDelivery not found');
+
+    // Do not overwrite existing snapshot (professional safeguard)
+    if (delivery.lines.every((l) => l.unitCost !== null && l.lineCost !== null)) {
+      return { ok: true, skipped: true, reason: 'Delivery already has cost snapshot' };
+    }
+
+    // Find posted JE for this delivery
+    const je = await this.prisma.journalEntry.findFirst({
+      where: {
+        status: 'POSTED',
+        sourceType: 'SalesDelivery',
+        sourceId: delivery.id,
+      },
+      include: { lines: { include: { account: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!je) {
+      throw new BadRequestException('Cannot backfill: no POSTED COGS journal entry found for this delivery');
+    }
+
+    // Total COGS = debit on 621
+    const cogsLines = je.lines.filter((l) => l.account.code === '621');
+    const totalCogs = cogsLines.reduce((s, l) => s + Number(l.debit), 0);
+
+    if (totalCogs <= 0) {
+      throw new BadRequestException('Cannot backfill: COGS amount is zero; delivery likely has no cost posting');
+    }
+
+    // Allocate by quantity (MVP). If multiple products, this is still consistent but not perfect.
+    // For perfect allocation across products, you’d need product-level cost captured per line originally.
+    const totalQty = delivery.lines.reduce((s, l) => s + Number(l.quantity), 0);
+    if (totalQty <= 0) throw new BadRequestException('Invalid delivery lines: total quantity is zero');
+
+    const updates = delivery.lines.map((l) => {
+      // Only fill missing ones
+      if (l.unitCost !== null && l.lineCost !== null) return null;
+
+      const qty = Number(l.quantity);
+      const ratio = qty / totalQty;
+
+      const lineCost = Math.round((totalCogs * ratio + Number.EPSILON) * 100) / 100;
+      const unitCost = qty <= 0 ? 0 : lineCost / qty; // derived
+
+      return this.prisma.salesDeliveryLine.update({
+        where: { id: l.id },
+        data: {
+          unitCost: unitCost.toFixed(6) as any,
+          lineCost: lineCost.toFixed(2) as any,
+        },
+      });
+    }).filter(Boolean) as any[];
+
+    await this.prisma.$transaction(updates);
+
+    await this.audit.log({
+      actorId: actor.sub,
+      action: AuditAction.UPDATE,
+      entity: 'SalesDelivery',
+      entityId: delivery.id,
+      after: { backfilled: true, journalEntryId: je.id, totalCogs: totalCogs.toFixed(2) },
+      message: `Backfilled delivery cost snapshot for ${delivery.documentNo} using JE ${je.documentNo}. Allocation=by_quantity.`,
+    });
+
+    return { ok: true, backfilled: true, deliveryId: delivery.id, journalEntryId: je.id, totalCogs: totalCogs.toFixed(2) };
   }
     
   async createSalesReturn(actor: JwtAccessPayload, deliveryId: string, dto: CreateSalesReturnDto) {
@@ -789,9 +870,7 @@ export class SalesService {
 
     return created;
   }
-
-  // NOTE: Your existing postInvoice should be updated to support kind logic below.
-
+  
   async postInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.customerInvoice.findUnique({
       where: { id },
@@ -893,5 +972,14 @@ export class SalesService {
     });
 
     return { ok: true, journalEntryId: je.id };
+  }
+
+  async getDelivery(id: string) {
+    const d = await this.prisma.salesDelivery.findUnique({
+      where: { id },
+      include: { so: true, lines: true, warehouse: true, stockMove: true },
+    });
+    if (!d) throw new NotFoundException('SalesDelivery not found');
+    return d;
   }
 }

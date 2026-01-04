@@ -32,11 +32,7 @@ export class SalesController {
 
   @Post('orders/:id/approve')
   @RequirePermissions('sales.order.approve')
-  approveOrder(
-    @CurrentUser() actor: JwtAccessPayload,
-    @Param('id') id: string,
-    @Body() dto: ApproveSalesOrderDto,
-  ) {
+  approveOrder(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ApproveSalesOrderDto) {
     return this.service.approveOrder(actor, id, dto.reason);
   }
 
@@ -44,12 +40,6 @@ export class SalesController {
   @RequirePermissions('sales.order.deliver')
   deliver(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: DeliverSalesOrderDto) {
     return this.service.deliverOrder(actor, id, dto);
-  }
-
-  @Post('deliveries/:id/return')
-  @RequirePermissions('sales.order.deliver')
-  createReturn(@CurrentUser() actor: JwtAccessPayload, @Param('id') deliveryId: string, @Body() dto: CreateSalesReturnDto) {
-    return this.service.createSalesReturn(actor, deliveryId, dto);
   }
 
   @Get('invoices')
@@ -74,5 +64,28 @@ export class SalesController {
   @RequirePermissions('sales.invoice.manage')
   createInvoiceNote(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreateInvoiceNoteDto) {
     return this.service.createInvoiceNote(actor, dto);
+  }
+
+  @Get('deliveries/:id')
+  @RequirePermissions('sales.order.read')
+  getDelivery(@Param('id') id: string) {
+    return this.service.getDelivery(id);
+  }
+
+  // return against delivery
+  @Post('deliveries/:id/return')
+  @RequirePermissions('sales.order.deliver')
+  createReturn(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') deliveryId: string,
+    @Body() dto: CreateSalesReturnDto,
+  ) {
+    return this.service.createSalesReturn(actor, deliveryId, dto);
+  }
+
+  @Post('deliveries/:id/backfill-cost')
+  @RequirePermissions('sales.delivery.cost.backfill')
+  backfillDeliveryCost(@CurrentUser() actor: JwtAccessPayload, @Param('id') deliveryId: string) {
+    return this.service.backfillDeliveryCostSnapshot(actor, deliveryId);
   }
 }
