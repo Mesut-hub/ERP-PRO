@@ -65,7 +65,7 @@ export class FifoService {
     });
 
     let remaining = args.qtyOut;
-    const ops: any[] = [];
+    const ops: Array<Promise<any>> = [];
     let total = 0;
 
     for (const layer of layers) {
@@ -110,7 +110,7 @@ export class FifoService {
       throw new BadRequestException(`Insufficient FIFO stock to allocate. Missing qty=${remaining.toFixed(4)}`);
     }
 
-    await (tx as any).$transaction([ops]);
+    for (const op of ops) await op;
 
     return { totalAmountBase: Math.round((total + Number.EPSILON) * 100) / 100 };
   }

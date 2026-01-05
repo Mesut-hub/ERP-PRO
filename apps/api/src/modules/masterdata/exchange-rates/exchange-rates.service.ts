@@ -21,39 +21,29 @@ export class ExchangeRatesService {
     });
   }
 
-  async create(
-    actorId: string,
-    data: { fromCode: string; toCode: string; rate: string; rateDate: string },
-  ) {
-    const fromCode = data.fromCode.toUpperCase();
-    const toCode = data.toCode.toUpperCase();
+  // NOTE: replace your current create() implementation with this idempotent one
+  async create(dto: { fromCode: string; toCode: string; rate: string; rateDate: string }) {
+    const fromCode = dto.fromCode.toUpperCase().trim();
+    const toCode = dto.toCode.toUpperCase().trim();
 
-    if (fromCode === toCode) throw new BadRequestException('fromCode and toCode must differ');
+    const rate = Number(dto.rate);
+    if (!Number.isFinite(rate) || rate <= 0) throw new BadRequestException('rate must be > 0');
+
+    const rateDate = new Date(dto.rateDate);
+    if (Number.isNaN(rateDate.getTime())) {
+      throw new BadRequestException('rateDate must be a valid ISO 8601 date string');
+    }
 
     const from = await this.prisma.currency.findUnique({ where: { code: fromCode } });
     const to = await this.prisma.currency.findUnique({ where: { code: toCode } });
     if (!from || !to) throw new BadRequestException('Invalid currency code(s)');
     if (!from.isActive || !to.isActive) throw new BadRequestException('Currency inactive');
 
-    const created = await this.prisma.exchangeRate.create({
-      data: {
-        fromCode,
-        toCode,
-        rate: data.rate as any,
-        rateDate: new Date(data.rateDate),
-        source: 'manual',
-      },
+    // IMPORTANT: idempotent upsert (prevents 500 P2002)
+    return this.prisma.exchangeRate.upsert({
+      where: { fromCode_toCode_rateDate: { fromCode, toCode, rateDate } },
+      update: { rate: rate.toFixed(8) as any },
+      create: { fromCode, toCode, rateDate, rate: rate.toFixed(8) as any },
     });
-
-    await this.audit.log({
-      actorId,
-      action: AuditAction.CREATE,
-      entity: 'ExchangeRate',
-      entityId: created.id,
-      after: created,
-      message: `Exchange rate ${fromCode}->${toCode}=${data.rate} on ${data.rateDate}`,
-    });
-
-    return created;
   }
 }

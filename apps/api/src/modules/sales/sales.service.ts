@@ -17,6 +17,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceNoteDto } from './dto/create-invoice-note.dto';
 import { CreateSalesReturnDto } from './dto/create-sales-return.dto';
+import { FifoService } from '../inventory/costing/fifo.service';
 
 function round2(n: number) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
@@ -49,6 +50,7 @@ export class SalesService {
     private readonly postingLock: PostingLockService,
     private readonly docNo: DocNoService,
     private readonly accounting: AccountingService,
+    private readonly fifo: FifoService,
   ) {}
 
   async listOrders() {
@@ -313,52 +315,76 @@ export class SalesService {
     // after delivery is created and move is posted and stockMoveId is set
 
     // --- Persist delivery cost snapshot (unitCost/lineCost) ---
-    const costUpdates: Array<{ id: string; unitCost: string; lineCost: string }> = [];
+    const fifoLineUpdates: Array<{ id: string; unitCost: string; lineCost: string }> = [];
+    let totalCost = 0;
 
-    for (const l of delivery.lines) {
-      const qty = Number(l.quantity);
+    await this.prisma.$transaction(async (tx) => {
+      for (const l of delivery.lines) {
+        const qty = Number(l.quantity);
+        if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Invalid delivery line quantity');
 
-      const costRow = await this.prisma.inventoryCost.findUnique({
-        where: { productId_warehouseId: { productId: l.productId, warehouseId: so.warehouseId } },
-      });
-      const avg = costRow ? Number(costRow.avgUnitCost) : 0;
+        const alloc = await this.fifo.allocateOutbound(tx as any, {
+          productId: l.productId,
+          warehouseId: so.warehouseId,
+          issueSourceType: 'SalesDelivery',
+          issueSourceId: delivery.id,
+          issueSourceLineId: l.id,
+          qtyOut: qty,
+        });
 
-      if (!Number.isFinite(avg) || avg <= 0) {
-        throw new BadRequestException(
-          `Missing inventory cost for product ${l.productId} in warehouse ${so.warehouseId}. Receive goods first to establish cost.`,
-        );
+        const lineCost = alloc.totalAmountBase; // TRY
+        const unitCost = lineCost / qty;
+
+        if (!Number.isFinite(unitCost) || unitCost <= 0) {
+          throw new BadRequestException('FIFO allocation produced invalid unit cost');
+        }
+
+        fifoLineUpdates.push({
+          id: l.id,
+          unitCost: unitCost.toFixed(6),
+          lineCost: lineCost.toFixed(2),
+        });
+
+        totalCost += lineCost;
+
+        // Valuation entry (optional but recommended)
+        await (tx as any).inventoryValuationEntry.create({
+          data: {
+            productId: l.productId,
+            warehouseId: so.warehouseId,
+            sourceType: 'SalesDelivery',
+            sourceId: delivery.id,
+            sourceLineId: l.id,
+            method: 'FIFO',
+            quantityIn: '0',
+            quantityOut: qty.toFixed(4),
+            amountBase: lineCost.toFixed(2),
+          },
+        });
       }
 
-      const lineCost = Math.round((qty * avg + Number.EPSILON) * 100) / 100;
-
-      costUpdates.push({
-        id: l.id,
-        unitCost: avg.toFixed(6),
-        lineCost: lineCost.toFixed(2),
-      });
-    }
-
-    // write snapshot
-    await this.prisma.$transaction(
-      costUpdates.map((u) =>
-        this.prisma.salesDeliveryLine.update({
+      for (const u of fifoLineUpdates) {
+        await (tx as any).salesDeliveryLine.update({
           where: { id: u.id },
-          data: { unitCost: u.unitCost as any, lineCost: u.lineCost as any },
-        }),
-      ),
-    );
+          data: { unitCost: u.unitCost, lineCost: u.lineCost },
+        })
+      }
+    });
 
+    totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
+
+    // Verify snapshot persisted (professional enforcement)
     const verify = await this.prisma.salesDeliveryLine.findMany({
       where: { deliveryId: delivery.id },
       select: { id: true, unitCost: true, lineCost: true },
     });
-    if (verify.some(v => v.unitCost === null || v.lineCost === null)) {
-      throw new BadRequestException('Failed to persist delivery cost snapshot');
+    if (verify.some((v) => v.unitCost === null || v.lineCost === null)) {
+      throw new BadRequestException('Failed to persist delivery cost snapshot (FIFO)');
     }
 
     // compute totalCost from snapshot (authoritative)
-    let totalCost = costUpdates.reduce((s, u) => s + Number(u.lineCost), 0);
-    totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
+    //let totalCost = costUpdates.reduce((s, u) => s + Number(u.lineCost), 0);
+    //totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
 
     // =========================
     // STEP 19.3: COGS RECOGNITION
