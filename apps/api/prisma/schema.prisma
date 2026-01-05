@@ -37,6 +37,7 @@ model User {
   stockMovesPosted        StockMove[]       @relation("StockMovePostedBy")
   supplierInvoicesCreated SupplierInvoice[] @relation("SiCreatedBy")
   supplierInvoicesPosted  SupplierInvoice[] @relation("SiPostedBy")
+  purchaseReturnsCreated  PurchaseReturn[]  @relation("PurchaseReturnCreatedBy")
   roles                   UserRole[]
 
   @@index([status])
@@ -173,6 +174,7 @@ model Unit {
   productsAsBaseUnit   Product[]
   purchaseOrderLines   PurchaseOrderLine[]
   purchaseReceiptLines PurchaseReceiptLine[]
+  purchaseReturnLines  PurchaseReturnLine[]
   deliveryLines        SalesDeliveryLine[]
   soLines              SalesOrderLine[]
   salesReturnLines     SalesReturnLine[]     @relation("SalesReturnLineUnit")
@@ -288,6 +290,7 @@ model Product {
   fifoLayers           InventoryFifoLayer[]
   fifoAllocations      InventoryFifoAllocation[]
   valuationEntries     InventoryValuationEntry[]
+  purchaseReturnLines  PurchaseReturnLine[]
 
   @@index([isActive])
   @@index([name])
@@ -343,6 +346,7 @@ model Warehouse {
   fifoLayers       InventoryFifoLayer[]
   fifoAllocations  InventoryFifoAllocation[]
   valuationEntries InventoryValuationEntry[]
+  purchaseReturns  PurchaseReturn[]
 
   @@index([isActive])
 }
@@ -384,6 +388,7 @@ model StockMove {
   postedBy        User?              @relation("StockMovePostedBy", fields: [postedById], references: [id])
   toWarehouse     Warehouse?         @relation("ToWarehouse", fields: [toWarehouseId], references: [id])
   lines           StockMoveLine[]
+  purchaseReturn  PurchaseReturn?
 
   @@index([type, status])
   @@index([documentDate])
@@ -486,25 +491,27 @@ model PurchaseReceipt {
   stockMove    StockMove?            @relation(fields: [stockMoveId], references: [id])
   warehouse    Warehouse             @relation(fields: [warehouseId], references: [id])
   lines        PurchaseReceiptLine[]
+  returns      PurchaseReturn[]
 
   @@index([poId])
   @@index([documentDate])
 }
 
 model PurchaseReceiptLine {
-  id           String          @id @default(cuid())
-  receiptId    String
-  productId    String
-  unitId       String
-  quantity     Decimal         @db.Decimal(18, 4)
-  notes        String?
-  lineSubtotal Decimal         @db.Decimal(18, 2)
-  poLineId     String
-  unitPrice    Decimal         @db.Decimal(18, 4)
-  vatCode      VatRateCode
-  product      Product         @relation(fields: [productId], references: [id])
-  receipt      PurchaseReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
-  unit         Unit            @relation(fields: [unitId], references: [id])
+  id                  String               @id @default(cuid())
+  receiptId           String
+  productId           String
+  unitId              String
+  quantity            Decimal              @db.Decimal(18, 4)
+  notes               String?
+  lineSubtotal        Decimal              @db.Decimal(18, 2)
+  poLineId            String
+  unitPrice           Decimal              @db.Decimal(18, 4)
+  vatCode             VatRateCode
+  purchaseReturnLines PurchaseReturnLine[]
+  product             Product              @relation(fields: [productId], references: [id])
+  receipt             PurchaseReceipt      @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  unit                Unit                 @relation(fields: [unitId], references: [id])
 
   @@index([receiptId])
   @@index([productId])
@@ -981,6 +988,58 @@ model InventoryValuationEntry {
 
   @@index([productId, warehouseId, createdAt])
   @@index([sourceType, sourceId])
+}
+
+model PurchaseReturn {
+  id           String   @id @default(cuid())
+  documentNo   String   @unique
+  documentDate DateTime @default(now())
+
+  receiptId   String
+  warehouseId String
+  stockMoveId String? @unique
+
+  reason String
+  notes  String?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  receipt   PurchaseReceipt @relation(fields: [receiptId], references: [id])
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id])
+  stockMove StockMove?      @relation(fields: [stockMoveId], references: [id])
+
+  createdBy User? @relation("PurchaseReturnCreatedBy", fields: [createdById], references: [id])
+
+  lines PurchaseReturnLine[]
+
+  @@index([receiptId])
+  @@index([documentDate])
+}
+
+model PurchaseReturnLine {
+  id            String @id @default(cuid())
+  returnId      String
+  receiptLineId String
+
+  productId String
+  unitId    String
+  quantity  Decimal @db.Decimal(18, 4)
+
+  // base TRY snapshot from FIFO allocation at posting time
+  unitCostBase Decimal @db.Decimal(18, 6)
+  lineCostBase Decimal @db.Decimal(18, 2)
+
+  notes String?
+
+  purchaseReturn PurchaseReturn      @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  receiptLine    PurchaseReceiptLine @relation(fields: [receiptLineId], references: [id])
+  product        Product             @relation(fields: [productId], references: [id])
+  unit           Unit                @relation(fields: [unitId], references: [id])
+
+  @@index([returnId])
+  @@index([receiptLineId])
+  @@index([productId])
 }
 
 /////////////////////////////////////////

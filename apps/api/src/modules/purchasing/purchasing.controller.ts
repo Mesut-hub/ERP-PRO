@@ -10,6 +10,7 @@ import { ReceivePoDto } from './dto/receive-po.dto';
 import { CreateSupplierInvoiceDto } from './dto/create-supplier-invoice.dto';
 import { PostingOverrideDto } from '../common/dto/posting-override.dto';
 import { CreateSupplierInvoiceNoteDto } from './dto/create-supplier-invoice-note.dto';
+import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
 
 @Controller('pur')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
@@ -62,5 +63,21 @@ export class PurchasingController {
   @RequirePermissions('pur.invoice.manage')
   createInvoiceNote(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreateSupplierInvoiceNoteDto) {
     return this.service.createSupplierInvoiceNote(actor, dto);
+  }
+
+  @Get('receipts/:id')
+  @RequirePermissions('pur.po.read')
+  getReceipt(@Param('id') id: string) {
+    return this.service.getReceipt(id);
+  }
+
+  @Post('receipts/:id/return')
+  @RequirePermissions('pur.po.receive')
+  createReturn(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') receiptId: string,
+    @Body() dto: CreatePurchaseReturnDto,
+  ) {
+    return this.service.createPurchaseReturn(actor, receiptId, dto);
   }
 }

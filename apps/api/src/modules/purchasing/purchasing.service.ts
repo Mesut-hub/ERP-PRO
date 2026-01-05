@@ -20,6 +20,7 @@ import { vatRateFromCode } from '../common/vat/vat-rate';
 import { computeLineTotals } from '../common/invoice/line-totals';
 import { FxService } from '../finance/fx/fx.service';
 import { FifoService } from '../inventory/costing/fifo.service';
+import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
 
 @Injectable()
 export class PurchasingService {
@@ -395,6 +396,211 @@ export class PurchasingService {
     });
 
     return { receiptId: receipt.id, stockMoveId: move.id };
+  }
+
+  async createPurchaseReturn(actor: JwtAccessPayload, receiptId: string, dto: CreatePurchaseReturnDto, overrideReason?: string) {
+    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Return must have lines');
+
+    const docDate = new Date(dto.documentDate);
+    if (Number.isNaN(docDate.getTime())) throw new BadRequestException('Invalid documentDate');
+
+    await this.postingLock.assertPostingAllowed(
+      actor,
+      docDate,
+      `Purchasing.createPurchaseReturn receiptId=${receiptId}`,
+      overrideReason,
+    );
+
+    const receipt = await this.prisma.purchaseReceipt.findUnique({
+      where: { id: receiptId },
+      include: { po: true, warehouse: true, lines: true },
+    });
+    if (!receipt) throw new NotFoundException('PurchaseReceipt not found');
+
+    // Professional control (temporary): block if PO has POSTED invoice until SCN workflow is implemented
+    if (receipt.poId) {
+      const postedInv = await this.prisma.supplierInvoice.findFirst({
+        where: { poId: receipt.poId, status: SupplierInvoiceStatus.POSTED },
+        select: { id: true, documentNo: true },
+      });
+      if (postedInv) {
+        throw new BadRequestException(
+          `Purchase return blocked: Supplier invoice ${postedInv.documentNo} is POSTED. Use Supplier Credit Note (SCN) workflow first.`,
+        );
+      }
+    }
+
+    // Validate receiptLineId and quantities
+    const receiptLineById = new Map(receipt.lines.map((l) => [l.id, l]));
+
+    const returnedAgg = await this.prisma.purchaseReturnLine.groupBy({
+      by: ['receiptLineId'],
+      where: { purchaseReturn: { receiptId } },
+      _sum: { quantity: true },
+    });
+    const returnedByLine = new Map<string, number>();
+    for (const r of returnedAgg) returnedByLine.set(r.receiptLineId, Number(r._sum.quantity ?? 0));
+
+    for (const rl of dto.lines) {
+      const base = receiptLineById.get(rl.receiptLineId);
+      if (!base) throw new BadRequestException('Invalid receiptLineId');
+
+      const qty = Number(rl.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Return quantity must be > 0');
+
+      const alreadyReturned = returnedByLine.get(base.id) ?? 0;
+      if (alreadyReturned + qty > Number(base.quantity) + 1e-9) {
+        throw new BadRequestException(`Return exceeds received qty for receiptLineId=${base.id}`);
+      }
+    }
+
+    const prNo = await this.docNo.allocate('PRTN', docDate);
+
+    // Create return + lines (cost snapshot filled after FIFO allocation)
+    const createdReturn = await this.prisma.purchaseReturn.create({
+      data: {
+        documentNo: prNo,
+        documentDate: docDate,
+        receiptId: receipt.id,
+        warehouseId: receipt.warehouseId,
+        reason: dto.reason,
+        notes: dto.notes,
+        createdById: actor.sub,
+        lines: {
+          create: dto.lines.map((rl) => {
+            const base = receiptLineById.get(rl.receiptLineId)!;
+            return {
+              receiptLineId: base.id,
+              productId: base.productId,
+              unitId: base.unitId,
+              quantity: rl.quantity,
+              unitCostBase: '0.000000',
+              lineCostBase: '0.00',
+              notes: rl.notes,
+            };
+          }),
+        },
+      },
+      include: { lines: true },
+    });
+
+    // Create & post StockMove ISSUE
+    const move = await this.inventory.createMove(actor.sub, {
+      type: StockMoveType.ISSUE,
+      fromWarehouseId: receipt.warehouseId,
+      documentDate: docDate.toISOString(),
+      notes: `Purchase return ${createdReturn.documentNo} against GRN ${receipt.documentNo}`,
+      lines: createdReturn.lines.map((l) => ({
+        productId: l.productId,
+        unitId: l.unitId,
+        quantity: l.quantity.toString(),
+        notes: l.notes,
+      })),
+    });
+
+    await this.inventory.postMove(actor, move.id, undefined, overrideReason);
+
+    await this.prisma.purchaseReturn.update({
+      where: { id: createdReturn.id },
+      data: { stockMoveId: move.id },
+    });
+
+    // FIFO allocate + update snapshots + valuation entries
+    let totalCost = 0;
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const l of createdReturn.lines) {
+        const qty = Number(l.quantity);
+
+        const alloc = await this.fifo.allocateOutbound(tx as any, {
+          productId: l.productId,
+          warehouseId: receipt.warehouseId,
+          issueSourceType: 'PurchaseReturn',
+          issueSourceId: createdReturn.id,
+          issueSourceLineId: l.id,
+          qtyOut: qty,
+        });
+
+        const lineCost = alloc.totalAmountBase;
+        const unitCost = lineCost / qty;
+
+        totalCost += lineCost;
+
+        await (tx as any).purchaseReturnLine.update({
+          where: { id: l.id },
+          data: { unitCostBase: unitCost.toFixed(6), lineCostBase: lineCost.toFixed(2) },
+        });
+
+        await (tx as any).inventoryValuationEntry.create({
+          data: {
+            productId: l.productId,
+            warehouseId: receipt.warehouseId,
+            sourceType: 'PurchaseReturn',
+            sourceId: createdReturn.id,
+            sourceLineId: l.id,
+            method: 'FIFO',
+            quantityIn: '0',
+            quantityOut: qty.toFixed(4),
+            amountBase: lineCost.toFixed(2),
+          },
+        });
+      }
+    });
+
+    totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
+
+    // Accounting: Dr 327 / Cr 150 (base TRY)
+    if (totalCost > 0) {
+      const accInv = await this.getAccountByCode('150');
+      const accGrni = await this.getAccountByCode('327');
+
+      await this.accounting.createPostedFromIntegration(actor.sub, {
+        documentDate: docDate,
+        description: `Purchase return ${createdReturn.documentNo} (GRN ${receipt.documentNo}) FIFO valuation`,
+        sourceType: 'PurchaseReturn',
+        sourceId: createdReturn.id,
+        lines: [
+          {
+            accountId: accGrni.id,
+            partyId: receipt.po?.supplierId ?? null,
+            description: `Purchase return ${createdReturn.documentNo} GRNI reversal`,
+            debit: totalCost.toFixed(2),
+            credit: '0',
+            currencyCode: 'TRY',
+            amountCurrency: totalCost.toFixed(2),
+          },
+          {
+            accountId: accInv.id,
+            partyId: receipt.po?.supplierId ?? null,
+            description: `Purchase return ${createdReturn.documentNo} Inventory out`,
+            debit: '0',
+            credit: totalCost.toFixed(2),
+            currencyCode: 'TRY',
+            amountCurrency: totalCost.toFixed(2),
+          },
+        ],
+      });
+    }
+
+    await this.audit.log({
+      actorId: actor.sub,
+      action: AuditAction.POST,
+      entity: 'PurchaseReturn',
+      entityId: createdReturn.id,
+      after: { documentNo: createdReturn.documentNo, stockMoveId: move.id, totalCost: totalCost.toFixed(2) },
+      message: `Created purchase return ${createdReturn.documentNo} for receipt ${receipt.documentNo}`,
+    });
+
+    return { purchaseReturnId: createdReturn.id, stockMoveId: move.id, totalCost: totalCost.toFixed(2) };
+  }
+
+  async getReceipt(id: string) {
+    const r = await this.prisma.purchaseReceipt.findUnique({
+      where: { id },
+      include: { lines: true, po: true, warehouse: true },
+    });
+    if (!r) throw new NotFoundException('PurchaseReceipt not found');
+    return r;
   }
 
   // --- Supplier invoice ---
