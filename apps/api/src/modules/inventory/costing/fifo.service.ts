@@ -19,7 +19,7 @@ export class FifoService {
     },
   ) {
     if (args.qtyIn <= 0) throw new BadRequestException('qtyIn must be > 0');
-    if (args.unitCostBase <= 0) throw new BadRequestException('unitCostBase must be > 0');
+    if (!Number.isFinite(args.unitCostBase) || args.unitCostBase <= 0) throw new BadRequestException('unitCostBase must be > 0');
 
     return (tx as any).inventoryFifoLayer.create({
       data: {
@@ -65,8 +65,7 @@ export class FifoService {
     });
 
     let remaining = args.qtyOut;
-    const allocCreates: any[] = [];
-    const layerUpdates: any[] = [];
+    const ops: any[] = [];
     let total = 0;
 
     for (const layer of layers) {
@@ -82,7 +81,7 @@ export class FifoService {
       total += amount;
       remaining -= take;
 
-      allocCreates.push(
+      ops.push(
         (tx as any).inventoryFifoAllocation.create({
           data: {
             productId: args.productId,
@@ -99,10 +98,10 @@ export class FifoService {
       );
 
       const newRemain = avail - take;
-      layerUpdates.push(
+      ops.push(
         (tx as any).inventoryFifoLayer.update({
           where: { id: layer.id },
-          data: { qtyRemain: newRemain.toFixed(4) as any },
+          data: { qtyRemain: newRemain.toFixed(4) },
         }),
       );
     }
@@ -111,7 +110,7 @@ export class FifoService {
       throw new BadRequestException(`Insufficient FIFO stock to allocate. Missing qty=${remaining.toFixed(4)}`);
     }
 
-    await tx.$transaction([...allocCreates, ...layerUpdates]);
+    await (tx as any).$transaction([ops]);
 
     return { totalAmountBase: Math.round((total + Number.EPSILON) * 100) / 100 };
   }
