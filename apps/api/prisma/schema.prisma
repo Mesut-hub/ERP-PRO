@@ -244,47 +244,50 @@ model PartyContact {
 }
 
 model Product {
-  id                   String                @id @default(cuid())
-  sku                  String                @unique
-  barcode              String?               @unique
+  id                   String                    @id @default(cuid())
+  sku                  String                    @unique
+  barcode              String?                   @unique
   name                 String
   description          String?
-  type                 ProductType           @default(GOODS)
+  type                 ProductType               @default(GOODS)
   baseUnitId           String
   vatCode              VatRateCode
-  isActive             Boolean               @default(true)
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  isActive             Boolean                   @default(true)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
   brand                String?
   categoryId           String?
-  heightCm             Decimal?              @db.Decimal(18, 2)
+  heightCm             Decimal?                  @db.Decimal(18, 2)
   hsCode               String?
-  lengthCm             Decimal?              @db.Decimal(18, 2)
-  minStock             Decimal?              @db.Decimal(18, 4)
+  lengthCm             Decimal?                  @db.Decimal(18, 2)
+  minStock             Decimal?                  @db.Decimal(18, 4)
   originCountry        String?
   priceCurrencyCode    String?
-  purchasePrice        Decimal?              @db.Decimal(18, 2)
-  reorderPoint         Decimal?              @db.Decimal(18, 4)
-  salesPrice           Decimal?              @db.Decimal(18, 2)
-  trackLot             Boolean               @default(false)
-  trackSerial          Boolean               @default(false)
-  weightKg             Decimal?              @db.Decimal(18, 4)
-  widthCm              Decimal?              @db.Decimal(18, 2)
+  purchasePrice        Decimal?                  @db.Decimal(18, 2)
+  reorderPoint         Decimal?                  @db.Decimal(18, 4)
+  salesPrice           Decimal?                  @db.Decimal(18, 2)
+  trackLot             Boolean                   @default(false)
+  trackSerial          Boolean                   @default(false)
+  weightKg             Decimal?                  @db.Decimal(18, 4)
+  widthCm              Decimal?                  @db.Decimal(18, 2)
   customerInvLines     CustomerInvoiceLine[]
   inventoryCosts       InventoryCost[]
-  baseUnit             Unit                  @relation(fields: [baseUnitId], references: [id])
-  category             ProductCategory?      @relation(fields: [categoryId], references: [id])
-  priceCurrency        Currency?             @relation("ProductPriceCurrency", fields: [priceCurrencyCode], references: [code])
-  vatRate              VatRate               @relation(fields: [vatCode], references: [code])
+  baseUnit             Unit                      @relation(fields: [baseUnitId], references: [id])
+  category             ProductCategory?          @relation(fields: [categoryId], references: [id])
+  priceCurrency        Currency?                 @relation("ProductPriceCurrency", fields: [priceCurrencyCode], references: [code])
+  vatRate              VatRate                   @relation(fields: [vatCode], references: [code])
   attachments          ProductAttachment[]
   purchaseOrderLines   PurchaseOrderLine[]
   purchaseReceiptLines PurchaseReceiptLine[]
   deliveryLines        SalesDeliveryLine[]
   soLines              SalesOrderLine[]
-  salesReturnLines     SalesReturnLine[]     @relation("SalesReturnLineProduct")
+  salesReturnLines     SalesReturnLine[]         @relation("SalesReturnLineProduct")
   stockLedgerEntries   StockLedgerEntry[]
   stockMoveLines       StockMoveLine[]
   supplierInvoiceLines SupplierInvoiceLine[]
+  fifoLayers           InventoryFifoLayer[]
+  fifoAllocations      InventoryFifoAllocation[]
+  valuationEntries     InventoryValuationEntry[]
 
   @@index([isActive])
   @@index([name])
@@ -321,22 +324,25 @@ model ProductAttachment {
 }
 
 model Warehouse {
-  id               String              @id @default(cuid())
-  code             String              @unique
+  id               String                    @id @default(cuid())
+  code             String                    @unique
   name             String
-  isActive         Boolean             @default(true)
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  isActive         Boolean                   @default(true)
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
   inventoryCosts   InventoryCost[]
   purchaseOrders   PurchaseOrder[]
   purchaseReceipts PurchaseReceipt[]
   salesDeliveries  SalesDelivery[]
   salesOrders      SalesOrder[]
-  salesReturns     SalesReturn[]       @relation("SalesReturnWarehouse")
+  salesReturns     SalesReturn[]             @relation("SalesReturnWarehouse")
   ledgerEntries    StockLedgerEntry[]
-  movesFrom        StockMove[]         @relation("FromWarehouse")
-  movesTo          StockMove[]         @relation("ToWarehouse")
+  movesFrom        StockMove[]               @relation("FromWarehouse")
+  movesTo          StockMove[]               @relation("ToWarehouse")
   locations        WarehouseLocation[]
+  fifoLayers       InventoryFifoLayer[]
+  fifoAllocations  InventoryFifoAllocation[]
+  valuationEntries InventoryValuationEntry[]
 
   @@index([isActive])
 }
@@ -899,6 +905,86 @@ model SalesReturnLine {
   @@index([productId])
 }
 
+model InventoryFifoLayer {
+  id          String @id @default(cuid())
+  productId   String
+  warehouseId String
+
+  sourceType   String
+  sourceId     String
+  sourceLineId String?
+
+  receivedAt DateTime
+  qtyIn      Decimal  @db.Decimal(18, 4)
+  qtyRemain  Decimal  @db.Decimal(18, 4)
+
+  // valuation in base (TRY)
+  unitCostBase Decimal @db.Decimal(18, 6)
+
+  createdAt DateTime @default(now())
+
+  product   Product   @relation(fields: [productId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+
+  allocations InventoryFifoAllocation[]
+
+  @@index([productId, warehouseId, receivedAt])
+  @@index([sourceType, sourceId])
+}
+
+model InventoryFifoAllocation {
+  id          String @id @default(cuid())
+  productId   String
+  warehouseId String
+
+  issueSourceType   String
+  issueSourceId     String
+  issueSourceLineId String?
+
+  layerId String
+
+  quantity     Decimal @db.Decimal(18, 4)
+  unitCostBase Decimal @db.Decimal(18, 6)
+  amountBase   Decimal @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+
+  layer     InventoryFifoLayer @relation(fields: [layerId], references: [id], onDelete: Restrict)
+  product   Product            @relation(fields: [productId], references: [id])
+  warehouse Warehouse          @relation(fields: [warehouseId], references: [id])
+
+  @@index([productId, warehouseId])
+  @@index([issueSourceType, issueSourceId])
+  @@index([layerId])
+}
+
+model InventoryValuationEntry {
+  id          String @id @default(cuid())
+  productId   String
+  warehouseId String
+
+  sourceType   String
+  sourceId     String
+  sourceLineId String?
+
+  method InventoryCostMethod @default(FIFO)
+
+  quantityIn  Decimal @default(0) @db.Decimal(18, 4)
+  quantityOut Decimal @default(0) @db.Decimal(18, 4)
+
+  amountBase Decimal @db.Decimal(18, 2) // positive for IN, positive for OUT (store absolute)
+
+  createdAt DateTime @default(now())
+
+  product   Product   @relation(fields: [productId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@index([productId, warehouseId, createdAt])
+  @@index([sourceType, sourceId])
+}
+
+/////////////////////////////////////////
+
 enum UserStatus {
   ACTIVE
   DISABLED
@@ -1018,4 +1104,8 @@ enum InvoiceKind {
   INVOICE
   CREDIT_NOTE
   DEBIT_NOTE
+}
+
+enum InventoryCostMethod {
+  FIFO
 }

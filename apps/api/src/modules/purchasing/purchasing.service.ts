@@ -18,6 +18,8 @@ import { JwtAccessPayload } from '../../common/types/auth.types';
 import { CreateSupplierInvoiceNoteDto } from './dto/create-supplier-invoice-note.dto';
 import { vatRateFromCode } from '../common/vat/vat-rate';
 import { computeLineTotals } from '../common/invoice/line-totals';
+import { FxService } from '../finance/fx/fx.service';
+import { FifoService } from '../inventory/costing/fifo.service';
 
 @Injectable()
 export class PurchasingService {
@@ -28,6 +30,8 @@ export class PurchasingService {
     private readonly inventory: InventoryService,
     private readonly accounting: AccountingService,
     private readonly postingLock: PostingLockService,
+    private readonly fx: FxService,
+    private readonly fifo: FifoService,
   ) {}
 
   private async getAccountByCode(code: string) {
@@ -239,6 +243,55 @@ export class PurchasingService {
       data: { stockMoveId: move.id },
     });
 
+    // --- FIFO valuation: create inbound layers (base TRY) ---
+    const rateToTry = await this.getRateToTryAtPosting(po.currencyCode, po.exchangeRateToBase, receipt.documentDate);
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const l of receipt.lines) {
+        const qty = Number(l.quantity);
+        if (!Number.isFinite(qty) || qty <= 0) continue;
+
+        // Receipt valuation uses net lineSubtotal (excluding VAT) in PO currency
+        const netPoCurrency = Number(l.lineSubtotal);
+        if (!Number.isFinite(netPoCurrency) || netPoCurrency < 0) {
+          throw new BadRequestException('Invalid receipt lineSubtotal');
+        }
+
+        const netTry = netPoCurrency * rateToTry;
+        const unitCostTry = netTry / qty;
+
+        if (!Number.isFinite(unitCostTry) || unitCostTry <= 0) {
+          throw new BadRequestException('Cannot create FIFO layer with non-positive unit cost');
+        }
+
+        await this.fifo.createInboundLayer(tx as any, {
+          productId: l.productId,
+          warehouseId: po.warehouseId,
+          sourceType: 'PurchaseReceipt',
+          sourceId: receipt.id,
+          sourceLineId: l.id,
+          receivedAt: receipt.documentDate,
+          qtyIn: qty,
+          unitCostBase: unitCostTry,
+        });
+
+        // Optional but recommended: valuation entry
+        await (tx as any).inventoryValuationEntry.create({
+          data: {
+            productId: l.productId,
+            warehouseId: po.warehouseId,
+            sourceType: 'PurchaseReceipt',
+            sourceId: receipt.id,
+            sourceLineId: l.id,
+            method: 'FIFO',
+            quantityIn: qty.toFixed(4),
+            quantityOut: '0',
+            amountBase: (Math.round((netTry + Number.EPSILON) * 100) / 100).toFixed(2),
+          },
+        });
+      }
+    });
+
     // --- Accounting: GRNI accrual at receipt time ---
     const net = this.sumReceiptNet(receipt.lines);
     if (net > 0) {
@@ -357,6 +410,21 @@ export class PurchasingService {
     const v = await this.prisma.vatRate.findUnique({ where: { code: vatCode } });
     if (!v) throw new BadRequestException('Invalid vatCode');
     return Number(v.percent);
+  }
+
+  private async getRateToTryAtPosting(poCurrency: string, poExchangeRateToBase: any, postingDate: Date): Promise<number> {
+    const cur = poCurrency.toUpperCase();
+    if (cur === 'TRY') return 1;
+
+    // If PO has an explicit exchangeRateToBase, treat it as locked override (auditable)
+    if (poExchangeRateToBase !== null && poExchangeRateToBase !== undefined) {
+      const r = Number(poExchangeRateToBase);
+      if (!Number.isFinite(r) || r <= 0) throw new BadRequestException('Invalid exchangeRateToBase on PO');
+      return r;
+    }
+
+    // Otherwise pull CBRT daily rate via ExchangeRate table (Istanbul day)
+    return this.fx.getRate(cur, 'TRY', postingDate);
   }
 
   async createSupplierInvoice(actorId: string, dto: any) {
@@ -493,7 +561,7 @@ export class PurchasingService {
 
     return created;
   }
-
+  
   async createSupplierInvoiceNote(actor: JwtAccessPayload, dto: CreateSupplierInvoiceNoteDto) {
     if (dto.kind === InvoiceKind.INVOICE) {
       throw new BadRequestException('Supplier invoice note kind must be CREDIT_NOTE or DEBIT_NOTE');
@@ -560,7 +628,7 @@ export class PurchasingService {
 
     return created;
   }
-
+  
   async postSupplierInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.supplierInvoice.findUnique({
       where: { id },

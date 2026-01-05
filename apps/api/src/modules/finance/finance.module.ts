@@ -3,10 +3,11 @@ import { FinanceService } from './finance.service';
 import { FinanceController } from './finance.controller';
 import { PostingLockService } from './posting-lock.service';
 import { FinanceAdminController } from './finance-admin.controller';
+import { FxService } from './fx/fx.service';
 
 @Module({
-  providers: [FinanceService, PostingLockService],
+  providers: [FinanceService, PostingLockService, FxService],
   controllers: [FinanceController, FinanceAdminController],
-  exports: [PostingLockService],
+  exports: [PostingLockService, FxService],
 })
 export class FinanceModule {}
