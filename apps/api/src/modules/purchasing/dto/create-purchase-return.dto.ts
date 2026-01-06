@@ -15,7 +15,7 @@ class CreatePurchaseReturnLineDto {
 
 export class CreatePurchaseReturnDto {
   @IsDateString()
-  documentDate!: string; // user-specified posting date
+  documentDate!: string;
 
   @IsString()
   reason!: string;
@@ -23,6 +23,10 @@ export class CreatePurchaseReturnDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  supplierCreditNoteId?: string;
 
   @IsArray()
   @ValidateNested({ each: true })

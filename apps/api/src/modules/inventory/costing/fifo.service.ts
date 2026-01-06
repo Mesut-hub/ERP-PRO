@@ -8,14 +8,14 @@ export class FifoService {
   async createInboundLayer(
     tx: PrismaService,
     args: {
-    productId: string;
-    warehouseId: string;
-    sourceType: string;
-    sourceId: string;
-    sourceLineId?: string | null;
-    receivedAt: Date;
-    qtyIn: number;
-    unitCostBase: number; // TRY
+      productId: string;
+      warehouseId: string;
+      sourceType: string;
+      sourceId: string;
+      sourceLineId?: string | null;
+      receivedAt: Date;
+      qtyIn: number;
+      unitCostBase: number; // TRY
     },
   ) {
     if (args.qtyIn <= 0) throw new BadRequestException('qtyIn must be > 0');
@@ -43,12 +43,12 @@ export class FifoService {
   async allocateOutbound(
     tx: PrismaService,
     args: {
-    productId: string;
-    warehouseId: string;
-    issueSourceType: string;
-    issueSourceId: string;
-    issueSourceLineId?: string | null;
-    qtyOut: number;
+      productId: string;
+      warehouseId: string;
+      issueSourceType: string;
+      issueSourceId: string;
+      issueSourceLineId?: string | null;
+      qtyOut: number;
     },
   ) {
     if (args.qtyOut <= 0) throw new BadRequestException('qtyOut must be > 0');

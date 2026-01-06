@@ -519,34 +519,35 @@ model PurchaseReceiptLine {
 }
 
 model SupplierInvoice {
-  id                 String                @id @default(cuid())
-  status             SupplierInvoiceStatus @default(DRAFT)
-  documentNo         String                @unique
-  documentDate       DateTime              @default(now())
-  supplierId         String
-  poId               String?
-  currencyCode       String
-  exchangeRateToBase Decimal?              @db.Decimal(18, 8)
-  subtotal           Decimal               @default(0) @db.Decimal(18, 2)
-  vatTotal           Decimal               @default(0) @db.Decimal(18, 2)
-  grandTotal         Decimal               @default(0) @db.Decimal(18, 2)
-  createdById        String?
-  postedById         String?
-  postedAt           DateTime?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
-  kind               InvoiceKind           @default(INVOICE)
-  noteOfId           String?
-  noteReason         String?
-  paymentsAllocated  PaymentAllocation[]
-  createdBy          User?                 @relation("SiCreatedBy", fields: [createdById], references: [id])
-  currency           Currency              @relation(fields: [currencyCode], references: [code])
-  noteOf             SupplierInvoice?      @relation("SupplierInvoiceNoteOf", fields: [noteOfId], references: [id])
-  notes              SupplierInvoice[]     @relation("SupplierInvoiceNoteOf")
-  po                 PurchaseOrder?        @relation(fields: [poId], references: [id])
-  postedBy           User?                 @relation("SiPostedBy", fields: [postedById], references: [id])
-  supplier           Party                 @relation(fields: [supplierId], references: [id])
-  lines              SupplierInvoiceLine[]
+  id                          String                @id @default(cuid())
+  status                      SupplierInvoiceStatus @default(DRAFT)
+  documentNo                  String                @unique
+  documentDate                DateTime              @default(now())
+  supplierId                  String
+  poId                        String?
+  currencyCode                String
+  exchangeRateToBase          Decimal?              @db.Decimal(18, 8)
+  subtotal                    Decimal               @default(0) @db.Decimal(18, 2)
+  vatTotal                    Decimal               @default(0) @db.Decimal(18, 2)
+  grandTotal                  Decimal               @default(0) @db.Decimal(18, 2)
+  createdById                 String?
+  postedById                  String?
+  postedAt                    DateTime?
+  createdAt                   DateTime              @default(now())
+  updatedAt                   DateTime              @updatedAt
+  kind                        InvoiceKind           @default(INVOICE)
+  noteOfId                    String?
+  noteReason                  String?
+  paymentsAllocated           PaymentAllocation[]
+  purchaseReturnsAsCreditNote PurchaseReturn[]      @relation("PurchaseReturnCreditNote")
+  createdBy                   User?                 @relation("SiCreatedBy", fields: [createdById], references: [id])
+  currency                    Currency              @relation(fields: [currencyCode], references: [code])
+  noteOf                      SupplierInvoice?      @relation("SupplierInvoiceNoteOf", fields: [noteOfId], references: [id])
+  notes                       SupplierInvoice[]     @relation("SupplierInvoiceNoteOf")
+  po                          PurchaseOrder?        @relation(fields: [poId], references: [id])
+  postedBy                    User?                 @relation("SiPostedBy", fields: [postedById], references: [id])
+  supplier                    Party                 @relation(fields: [supplierId], references: [id])
+  lines                       SupplierInvoiceLine[]
 
   @@index([kind])
   @@index([noteOfId])
@@ -1002,12 +1003,13 @@ model PurchaseReturn {
   reason String
   notes  String?
 
-  createdById String?
-  createdAt   DateTime @default(now())
-
-  receipt   PurchaseReceipt @relation(fields: [receiptId], references: [id])
-  warehouse Warehouse       @relation(fields: [warehouseId], references: [id])
-  stockMove StockMove?      @relation(fields: [stockMoveId], references: [id])
+  createdById          String?
+  createdAt            DateTime         @default(now())
+  supplierCreditNoteId String?          @unique
+  supplierCreditNote   SupplierInvoice? @relation("PurchaseReturnCreditNote", fields: [supplierCreditNoteId], references: [id])
+  receipt              PurchaseReceipt  @relation(fields: [receiptId], references: [id])
+  warehouse            Warehouse        @relation(fields: [warehouseId], references: [id])
+  stockMove            StockMove?       @relation(fields: [stockMoveId], references: [id])
 
   createdBy User? @relation("PurchaseReturnCreatedBy", fields: [createdById], references: [id])
 
@@ -1015,6 +1017,7 @@ model PurchaseReturn {
 
   @@index([receiptId])
   @@index([documentDate])
+  @@index([supplierCreditNoteId])
 }
 
 model PurchaseReturnLine {
