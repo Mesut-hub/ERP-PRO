@@ -417,18 +417,39 @@ export class PurchasingService {
     });
     if (!receipt) throw new NotFoundException('PurchaseReceipt not found');
 
+    let postedInv: { id: string; documentNo: string } | null = null;
+
     // Professional control (temporary): block if PO has POSTED invoice until SCN workflow is implemented
     if (receipt.poId) {
-      const postedInv = await this.prisma.supplierInvoice.findFirst({
-        where: { poId: receipt.poId, status: SupplierInvoiceStatus.POSTED },
+      postedInv = await this.prisma.supplierInvoice.findFirst({
+        where: { poId: receipt.poId, status: SupplierInvoiceStatus.POSTED, kind: InvoiceKind.INVOICE },
         select: { id: true, documentNo: true },
+        orderBy: { documentDate: 'desc' },
       });
-      if (postedInv) {
+    }
+
+    let scn: { id: string; documentNo: string; noteOfId: string } | null = null;
+
+    if (postedInv) {
+      if (!dto.supplierCreditNoteId) {
         throw new BadRequestException(
           `Purchase return blocked: Supplier invoice ${postedInv.documentNo} is POSTED. Use Supplier Credit Note (SCN) workflow first.`,
         );
       }
+
+      scn = await this.prisma.supplierInvoice.findUnique({
+      where: { id: dto.supplierCreditNoteId },
+      select: { id: true, documentNo: true, noteOfId: true, status: true, kind: true, poId: true },
+      }) as any;
+
+      if (!scn) throw new BadRequestException('Invalid supplierCreditNoteId');
+      if (scn.poId !== receipt.poId) throw new BadRequestException('Credit note does not belong to same PO');
+      if (scn.kind !== InvoiceKind.CREDIT_NOTE) throw new BadRequestException('supplierCreditNoteId must be CREDIT_NOTE');
+      if (scn.status !== SupplierInvoiceStatus.POSTED) throw new BadRequestException('Credit note must be POSTED');
+      if (scn.noteOfId !== postedInv.id) {
+        throw new BadRequestException(`Credit note must be issued as a note of invoice ${postedInv.documentNo}`);
     }
+  }
 
     // Validate receiptLineId and quantities
     const receiptLineById = new Map(receipt.lines.map((l) => [l.id, l]));
@@ -463,6 +484,7 @@ export class PurchasingService {
         documentDate: docDate,
         receiptId: receipt.id,
         warehouseId: receipt.warehouseId,
+        supplierCreditNoteId: dto.supplierCreditNoteId ?? null,
         reason: dto.reason,
         notes: dto.notes,
         createdById: actor.sub,
@@ -552,18 +574,24 @@ export class PurchasingService {
     // Accounting: Dr 327 / Cr 150 (base TRY)
     if (totalCost > 0) {
       const accInv = await this.getAccountByCode('150');
-      const accGrni = await this.getAccountByCode('327');
+      const accDebit = postedInv
+      ? await this.getAccountByCode('328') // Purchase Returns Clearing (after-invoice)
+      : await this.getAccountByCode('327');
 
       await this.accounting.createPostedFromIntegration(actor.sub, {
         documentDate: docDate,
-        description: `Purchase return ${createdReturn.documentNo} (GRN ${receipt.documentNo}) FIFO valuation`,
+        description: postedInv
+        ? `Purchase return ${createdReturn.documentNo} (after invoice ${postedInv.documentNo}, SCN ${scn!.documentNo})`
+        : `Purchase return ${createdReturn.documentNo} (pre-invoice)`,
         sourceType: 'PurchaseReturn',
         sourceId: createdReturn.id,
         lines: [
           {
-            accountId: accGrni.id,
+            accountId: accDebit.id,
             partyId: receipt.po?.supplierId ?? null,
-            description: `Purchase return ${createdReturn.documentNo} GRNI reversal`,
+            description: postedInv
+            ? `Purchase return clearing for ${createdReturn.documentNo}`
+            : `Purchase return GRNI reversal for ${createdReturn.documentNo}`,
             debit: totalCost.toFixed(2),
             credit: '0',
             currencyCode: 'TRY',
@@ -1016,5 +1044,23 @@ export class PurchasingService {
     });
 
     return { ok: true, journalEntryId: posted.je.id };
+  }
+
+  async getSupplierInvoice(id: string) {
+    const inv = await this.prisma.supplierInvoice.findUnique({
+      where: { id },
+      include: { lines: true, supplier: true, po: true, journalEntry: true },
+    });
+    if (!inv) throw new NotFoundException('SupplierInvoice not found');
+    return inv;
+  }
+
+  async getPurchaseReturn(id: string) {
+    const pr = await this.prisma.purchaseReturn.findUnique({
+      where: { id },
+      include: { lines: true, receipt: true, supplierCreditNote: true, stockMove: true },
+    });
+    if (!pr) throw new NotFoundException('PurchaseReturn not found');
+    return pr;
   }
 }

@@ -1,6 +1,14 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
+type FifoLayerRow = {
+  id: string;
+  qtyRemain: any;
+  unitCostBase: any;
+  receivedAt: Date;
+  createdAt: Date;
+};
+
 @Injectable()
 export class FifoService {
   constructor(private readonly prisma: PrismaService) {}
@@ -53,19 +61,18 @@ export class FifoService {
   ) {
     if (args.qtyOut <= 0) throw new BadRequestException('qtyOut must be > 0');
 
-    // NOTE: For full concurrency safety, we may need SELECT ... FOR UPDATE.
-    // Prisma doesn't expose FOR UPDATE directly; we can use tx.$queryRaw later if needed.
-    const layers = await (tx as any).inventoryFifoLayer.findMany({
-      where: {
-        productId: args.productId,
-        warehouseId: args.warehouseId,
-        qtyRemain: { gt: 0 },
-      },
-      orderBy: [{ receivedAt: 'asc' }, { createdAt: 'asc' }],
-    });
+    // LOCK candidate layers to prevent concurrent double-allocation
+    const layers = await (tx as any).$queryRaw<FifoLayerRow[]>`
+      SELECT "id", "qtyRemain", "unitCostBase", "receivedAt", "createdAt"
+      FROM "InventoryFifoLayer"
+      WHERE "productId" = ${args.productId}
+        AND "warehouseId" = ${args.warehouseId}
+        AND "qtyRemain" > 0
+      ORDER BY "receivedAt" ASC, "createdAt" ASC
+      FOR UPDATE
+    `;
 
     let remaining = args.qtyOut;
-    const ops: Array<Promise<any>> = [];
     let total = 0;
 
     for (const layer of layers) {
@@ -81,36 +88,29 @@ export class FifoService {
       total += amount;
       remaining -= take;
 
-      ops.push(
-        (tx as any).inventoryFifoAllocation.create({
-          data: {
-            productId: args.productId,
-            warehouseId: args.warehouseId,
-            issueSourceType: args.issueSourceType,
-            issueSourceId: args.issueSourceId,
-            issueSourceLineId: args.issueSourceLineId ?? null,
-            layerId: layer.id,
-            quantity: take.toFixed(4),
-            unitCostBase: unitCost.toFixed(6),
-            amountBase: amount.toFixed(2),
-          },
-        }),
-      );
+      await (tx as any).inventoryFifoAllocation.create({
+        data: {
+          productId: args.productId,
+          warehouseId: args.warehouseId,
+          issueSourceType: args.issueSourceType,
+          issueSourceId: args.issueSourceId,
+          issueSourceLineId: args.issueSourceLineId ?? null,
+          layerId: layer.id,
+          quantity: take.toFixed(4),
+          unitCostBase: unitCost.toFixed(6),
+          amountBase: amount.toFixed(2),
+        },
+      });
 
-      const newRemain = avail - take;
-      ops.push(
-        (tx as any).inventoryFifoLayer.update({
-          where: { id: layer.id },
-          data: { qtyRemain: newRemain.toFixed(4) },
-        }),
-      );
+      await (tx as any).inventoryFifoLayer.update({
+        where: { id: layer.id },
+        data: { qtyRemain: (avail - take).toFixed(4) },
+      });
     }
 
     if (remaining > 1e-9) {
-      throw new BadRequestException(`Insufficient FIFO stock to allocate. Missing qty=${remaining.toFixed(4)}`);
+      throw new BadRequestException(`Insufficient FIFO stock. Missing qty=${remaining.toFixed(4)}`);
     }
-
-    for (const op of ops) await op;
 
     return { totalAmountBase: Math.round((total + Number.EPSILON) * 100) / 100 };
   }

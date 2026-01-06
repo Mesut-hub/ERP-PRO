@@ -53,6 +53,12 @@ export class PurchasingController {
     return this.service.createSupplierInvoice(actor.sub, dto);
   }
 
+  @Get('invoices/:id')
+  @RequirePermissions('pur.invoice.read')
+  getInvoice(@Param('id') id: string) {
+    return this.service.getSupplierInvoice(id);
+  }
+
   @Post('invoices/:id/post')
   @RequirePermissions('pur.invoice.post')
   postInvoice(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
@@ -79,5 +85,11 @@ export class PurchasingController {
     @Body() dto: CreatePurchaseReturnDto,
   ) {
     return this.service.createPurchaseReturn(actor, receiptId, dto);
+  }
+
+  @Get('returns/:id')
+  @RequirePermissions('pur.po.read')
+  getReturn(@Param('id') id: string) {
+    return this.service.getPurchaseReturn(id);
   }
 }
