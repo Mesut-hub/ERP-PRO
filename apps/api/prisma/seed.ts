@@ -183,11 +183,15 @@ async function main() {
 
     { code: '320', name: 'Accounts Payable (AP)', type: 'LIABILITY' as const },
     { code: '327', name: 'Goods Received Not Invoiced (GRNI)', type: 'LIABILITY' as const },
+
+    // NEW: Purchase Returns Clearing (after-invoice returns awaiting SCN matching)
+    { code: '328', name: 'Purchase Returns Clearing', type: 'LIABILITY' as const },
+
     { code: '391', name: 'VAT Payable (KDV)', type: 'LIABILITY' as const },
 
     { code: '600', name: 'Sales Revenue', type: 'REVENUE' as const },
     { code: '621', name: 'Cost of Goods Sold (COGS)', type: 'EXPENSE' as const },
-    { code: '770', name: 'General Administrative Expenses', type: 'EXPENSE' as const }
+    { code: '770', name: 'General Administrative Expenses', type: 'EXPENSE' as const },
   ];
 
   for (const a of accounts) {

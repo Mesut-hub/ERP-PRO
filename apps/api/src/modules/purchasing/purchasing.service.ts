@@ -428,18 +428,32 @@ export class PurchasingService {
       });
     }
 
-    let scn: { id: string; documentNo: string; noteOfId: string } | null = null;
+    let scn: { 
+      id: string;
+      documentNo: string;
+      noteOfId: string,
+      poId: string | null;
+      kind: InvoiceKind;
+      status: SupplierInvoiceStatus; 
+    } | null = null;
 
     if (postedInv) {
       if (!dto.supplierCreditNoteId) {
         throw new BadRequestException(
-          `Purchase return blocked: Supplier invoice ${postedInv.documentNo} is POSTED. Use Supplier Credit Note (SCN) workflow first.`,
+          `Supplier invoice ${postedInv.documentNo} is POSTED. Provide supplierCreditNoteId (POSTED CREDIT_NOTE) to allow return-after-invoice.`,
         );
       }
 
       scn = await this.prisma.supplierInvoice.findUnique({
-      where: { id: dto.supplierCreditNoteId },
-      select: { id: true, documentNo: true, noteOfId: true, status: true, kind: true, poId: true },
+        where: { id: dto.supplierCreditNoteId },
+        select: { 
+          id: true,
+          documentNo: true,
+          noteOfId: true,
+          status: true,
+          kind: true,
+          poId: true 
+        },
       }) as any;
 
       if (!scn) throw new BadRequestException('Invalid supplierCreditNoteId');
@@ -822,7 +836,9 @@ export class PurchasingService {
         documentNo: docNo,
         documentDate: docDate,
         supplierId: base.supplierId,
+        poId: base.poId,
         currencyCode: base.currencyCode,
+        exchangeRateToBase: base.exchangeRateToBase,
 
         createdById: actor.sub,
 
@@ -836,7 +852,7 @@ export class PurchasingService {
             const totals = computeLineTotals(qty, price, vatRate);
 
             return {
-              ...(l.productId ? { product: { connect: { id: l.productId } } } : {}),
+              ...(l.productId ? { productId: l.productId } : {}),
               description: l.description,
               quantity: l.quantity,
               unitPrice: l.unitPrice,

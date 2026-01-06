@@ -530,6 +530,10 @@ model SupplierInvoice {
   subtotal                    Decimal               @default(0) @db.Decimal(18, 2)
   vatTotal                    Decimal               @default(0) @db.Decimal(18, 2)
   grandTotal                  Decimal               @default(0) @db.Decimal(18, 2)
+
+  // keep scalar notes
+  notes                       String?
+
   createdById                 String?
   postedById                  String?
   postedAt                    DateTime?
@@ -538,12 +542,22 @@ model SupplierInvoice {
   kind                        InvoiceKind           @default(INVOICE)
   noteOfId                    String?
   noteReason                  String?
+
   paymentsAllocated           PaymentAllocation[]
-  purchaseReturnsAsCreditNote PurchaseReturn[]      @relation("PurchaseReturnCreditNote")
+
+  // NOTE: We'll revisit this relation for SCN linking; leaving as-is for now
+  purchaseReturn              PurchaseReturn[]      @relation("PurchaseReturnCreditNote")
+
   createdBy                   User?                 @relation("SiCreatedBy", fields: [createdById], references: [id])
   currency                    Currency              @relation(fields: [currencyCode], references: [code])
+
+  // invoice that this note is for
   noteOf                      SupplierInvoice?      @relation("SupplierInvoiceNoteOf", fields: [noteOfId], references: [id])
-  notes                       SupplierInvoice[]     @relation("SupplierInvoiceNoteOf")
+
+  // FIX: rename the list relation so it doesn't collide with scalar "notes"
+  noteChildren                SupplierInvoice[]     @relation("SupplierInvoiceNoteOf")
+  noteEntries                 SupplierInvoiceNote[] @relation("SupplierInvoiceNotes")
+
   po                          PurchaseOrder?        @relation(fields: [poId], references: [id])
   postedBy                    User?                 @relation("SiPostedBy", fields: [postedById], references: [id])
   supplier                    Party                 @relation(fields: [supplierId], references: [id])
@@ -574,6 +588,17 @@ model SupplierInvoiceLine {
 
   @@index([invoiceId])
   @@index([poLineId])
+}
+
+model SupplierInvoiceNote {
+  id        String   @id @default(cuid())
+  invoiceId String
+  message   String
+  createdAt  DateTime @default(now())
+
+  invoice   SupplierInvoice @relation("SupplierInvoiceNotes", fields: [invoiceId], references: [id], onDelete: Cascade)
+  
+  @@index([invoiceId])
 }
 
 model Account {
@@ -1005,7 +1030,7 @@ model PurchaseReturn {
 
   createdById          String?
   createdAt            DateTime         @default(now())
-  supplierCreditNoteId String?          @unique
+  supplierCreditNoteId String?
   supplierCreditNote   SupplierInvoice? @relation("PurchaseReturnCreditNote", fields: [supplierCreditNoteId], references: [id])
   receipt              PurchaseReceipt  @relation(fields: [receiptId], references: [id])
   warehouse            Warehouse        @relation(fields: [warehouseId], references: [id])
