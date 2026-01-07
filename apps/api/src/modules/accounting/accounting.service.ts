@@ -20,14 +20,6 @@ export class AccountingService {
     return this.prisma.account.findMany({ orderBy: { code: 'asc' } });
   }
 
-  async listJournalEntries() {
-    return this.prisma.journalEntry.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: { lines: { include: { account: true } } },
-      take: 100,
-    });
-  }
-
   private validateBalanced(lines: Array<{ debit: string; credit: string }>) {
     const debit = lines.reduce((s, l) => s + Number(l.debit), 0);
     const credit = lines.reduce((s, l) => s + Number(l.credit), 0);
@@ -118,6 +110,26 @@ export class AccountingService {
     });
 
     return { ok: true };
+  }
+
+  async listJournalEntries() {
+    return this.prisma.journalEntry.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { lines: { include: { account: true } } },
+      take: 100,
+    });
+  }
+
+  async listJournalEntriesBySource(sourceType: string, sourceId: string) {
+    if (!sourceType?.trim()) throw new BadRequestException('sourceType is required');
+    if (!sourceId?.trim()) throw new BadRequestException('sourceId is required');
+
+    return this.prisma.journalEntry.findMany({
+      where: { sourceType, sourceId },
+      orderBy: { createdAt: 'desc' },
+      include: { lines: { include: { account: true } } },
+      take: 100,
+    });
   }
 
   async reverseJournal(actor: JwtAccessPayload, id: string, dto: ReverseJournalDto) {

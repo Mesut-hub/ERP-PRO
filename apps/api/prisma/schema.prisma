@@ -545,16 +545,16 @@ model SupplierInvoice {
 
   paymentsAllocated           PaymentAllocation[]
 
-  // NOTE: We'll revisit this relation for SCN linking; leaving as-is for now
+  journalEntry   JournalEntry? @relation("SupplierInvoiceJournalEntry", fields: [journalEntryId], references: [id])
+  journalEntryId String?       @unique
+
   purchaseReturn              PurchaseReturn[]      @relation("PurchaseReturnCreditNote")
 
   createdBy                   User?                 @relation("SiCreatedBy", fields: [createdById], references: [id])
   currency                    Currency              @relation(fields: [currencyCode], references: [code])
 
-  // invoice that this note is for
   noteOf                      SupplierInvoice?      @relation("SupplierInvoiceNoteOf", fields: [noteOfId], references: [id])
 
-  // FIX: rename the list relation so it doesn't collide with scalar "notes"
   noteChildren                SupplierInvoice[]     @relation("SupplierInvoiceNoteOf")
   noteEntries                 SupplierInvoiceNote[] @relation("SupplierInvoiceNotes")
 
@@ -635,6 +635,7 @@ model JournalEntry {
   postedBy       User?         @relation("JePostedBy", fields: [postedById], references: [id])
   reversalOf     JournalEntry? @relation("JournalReversal", fields: [reversalOfId], references: [id])
   reversal       JournalEntry? @relation("JournalReversal")
+  relatedSupplierInvoice SupplierInvoice? @relation("SupplierInvoiceJournalEntry")
   lines          JournalLine[]
 
   @@index([status])

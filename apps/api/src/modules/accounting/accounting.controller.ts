@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RequirePermissions } from '../../common/decorators/require-permissions.decorator';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
@@ -26,6 +26,13 @@ export class AccountingController {
     return this.service.listJournalEntries();
   }
 
+  // NEW: query by integration source (PurchaseReturn, SupplierInvoice, SalesDelivery, etc.)
+  @Get('journals/by-source')
+  @RequirePermissions('acc.journal.read')
+  listJournalsBySource(@Query('sourceType') sourceType: string, @Query('sourceId') sourceId: string) {
+    return this.service.listJournalEntriesBySource(sourceType, sourceId);
+  }
+
   @Post('journals')
   @RequirePermissions('acc.journal.manage')
   create(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreateJournalDto) {
@@ -42,5 +49,5 @@ export class AccountingController {
   @RequirePermissions('acc.journal.post')
   reverse(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ReverseJournalDto) {
     return this.service.reverseJournal(actor, id, dto);
-}
+  }
 }
