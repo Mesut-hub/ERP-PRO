@@ -5,6 +5,22 @@ import request from 'supertest';
 import { AppModule } from '../src/modules/app/app.module';
 
 describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
+
+  async function getJEsBySource(httpServer: any, h: any, sourceType: string, sourceId: string) {
+    const res = await request(httpServer)
+      .get(`/acc/journals/by-source?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`)
+      .set(h)
+      .expect(200);
+    return res.body;
+  }
+
+  function jeHasAccountCode(jes: any[], code: string) {
+    return jes.some((je) => (je.lines ?? []).some((ln: any) => ln.account?.code === code));
+  }
+
+  function jeHasAnyLine(jes: any[], predicate: (ln: any) => boolean) {
+    return jes.some((je) => (je.lines ?? []).some((ln: any) => predicate(ln)));
+  }
   jest.setTimeout(60_000);
 
   let app: INestApplication;
@@ -160,6 +176,16 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     // post invoice
     await request(httpServer).post(`/pur/invoices/${invoiceId}/post`).set(h).send({}).expect(201);
 
+    const invJes = await getJEsBySource(httpServer, h, 'SupplierInvoice', invoiceId);
+    expect(Array.isArray(invJes)).toBe(true);
+    expect(invJes.length).toBeGreaterThan(0);
+    expect(jeHasAccountCode(invJes, '320')).toBe(true);
+
+    // NEW: verify journalEntry relation is stored on invoice
+    const invGet = await request(httpServer).get(`/pur/invoices/${invoiceId}`).set(h).expect(200);
+    expect(invGet.body.journalEntry).toBeTruthy();
+    expect(invGet.body.journalEntry.id).toBeTruthy();
+
     // return should be blocked (no SCN)
     const returnDate = new Date().toISOString();
     await request(httpServer)
@@ -199,6 +225,20 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     // post credit note
     await request(httpServer).post(`/pur/invoices/${creditNoteId}/post`).set(h).send({}).expect(201);
 
+    // NEW: verify SCN produced a clearing JE with account 328 (Dr327/Cr328)
+    const scnJes = await getJEsBySource(httpServer, h, 'SupplierInvoice', creditNoteId);
+    expect(scnJes.length).toBeGreaterThan(0);
+    expect(jeHasAccountCode(scnJes, '328')).toBe(true);
+    expect(jeHasAccountCode(scnJes, '327')).toBe(true);
+
+    const scnGet = await request(httpServer).get(`/pur/invoices/${creditNoteId}`).set(h).expect(200);
+    expect(scnGet.body.journalEntry).toBeTruthy();
+
+    // Stronger: verify 328 is credited (clearing)
+    expect(
+      jeHasAnyLine(scnJes, (ln) => ln.account?.code === '328' && Number(ln.credit) > 0),
+    ).toBe(true);
+
     // return should succeed with SCN
     const okReturn = await request(httpServer)
       .post(`/pur/receipts/${receiptId}/return`)
@@ -214,5 +254,21 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
 
     expect(okReturn.body.purchaseReturnId).toBeTruthy();
     expect(okReturn.body.totalCost).toBeTruthy();
+
+    const purchaseReturnId = okReturn.body.purchaseReturnId;
+
+    // NEW: verify PurchaseReturn JE exists and uses 328 and 150
+    const prJes = await getJEsBySource(httpServer, h, 'PurchaseReturn', purchaseReturnId);
+    expect(prJes.length).toBeGreaterThan(0);
+    expect(jeHasAccountCode(prJes, '328')).toBe(true); // Dr 328
+    expect(jeHasAccountCode(prJes, '150')).toBe(true); // Cr 150
+
+    // Stronger: check at least one line credits 150 and one line debits 328
+    expect(
+      jeHasAnyLine(prJes, (ln) => ln.account?.code === '150' && Number(ln.credit) > 0),
+    ).toBe(true);
+    expect(
+      jeHasAnyLine(prJes, (ln) => ln.account?.code === '328' && Number(ln.debit) > 0),
+    ).toBe(true);
   });
 });

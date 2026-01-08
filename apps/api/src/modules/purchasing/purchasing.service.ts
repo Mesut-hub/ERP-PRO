@@ -1045,8 +1045,79 @@ export class PurchasingService {
         lines: journalLines,
       });
 
+      // NEW: persist relation to allow include: { journalEntry: true }
+      await tx.supplierInvoice.update({
+        where: { id: inv.id },
+        data: { journalEntryId: je.id },
+      });
+
       return { upd, je };
     });
+
+    // NEW: if this is a CREDIT_NOTE used to approve purchase returns after invoice,
+    // clear Purchase Returns Clearing (328) back into GRNI (327) in base TRY.
+    if (inv.kind === InvoiceKind.CREDIT_NOTE) {
+      const linkedReturns = await this.prisma.purchaseReturn.findMany({
+        where: { supplierCreditNoteId: inv.id },
+        include: { lines: true },
+      });
+
+      if (linkedReturns.length) {
+        const totalReturnBase = linkedReturns.reduce((sum, pr) => {
+          const prTotal = pr.lines.reduce((s, l) => s + Number((l as any).lineCostBase ?? 0), 0);
+          return sum + prTotal;
+        }, 0);
+
+        const amt = Math.round((totalReturnBase + Number.EPSILON) * 100) / 100;
+
+        if (amt > 0) {
+          const acc328 = await this.getAccountByCode('328');
+          const acc327 = await this.getAccountByCode('327');
+
+          const je2 = await this.accounting.createPostedFromIntegration(actor.sub, {
+            documentDate: inv.documentDate,
+            description: `SCN ${inv.documentNo} clears Purchase Returns (Dr327/Cr328)`,
+            sourceType: 'SupplierInvoice',
+            sourceId: inv.id,
+            lines: [
+              {
+                accountId: acc327.id,
+                partyId: inv.supplierId,
+                description: `SCN ${inv.documentNo} base clearing debit`,
+                debit: amt.toFixed(2),
+                credit: '0',
+                currencyCode: 'TRY',
+                amountCurrency: amt.toFixed(2),
+              },
+              {
+                accountId: acc328.id,
+                partyId: inv.supplierId,
+                description: `SCN ${inv.documentNo} clears Purchase Returns Clearing`,
+                debit: '0',
+                credit: amt.toFixed(2),
+                currencyCode: 'TRY',
+                amountCurrency: amt.toFixed(2),
+              },
+            ],
+          });
+
+          await this.audit.log({
+            actorId: actor.sub,
+            action: AuditAction.POST,
+            entity: 'SupplierInvoice',
+            entityId: inv.id,
+            after: {
+              status: 'POSTED',
+              journalEntryId: posted.je.id,
+              purchaseReturnClearingJournalEntryId: je2.id,
+              purchaseReturnClearingAmountBase: amt.toFixed(2),
+              hasPoMatch,
+            },
+            message: `Posted SCN base clearing JE ${je2.documentNo} for ${inv.documentNo}`,
+          });
+        }
+      }
+    }
 
     await this.audit.log({
       actorId: actor.sub,
