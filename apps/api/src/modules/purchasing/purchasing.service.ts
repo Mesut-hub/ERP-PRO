@@ -52,23 +52,23 @@ export class PurchasingService {
     supplierId: string | null;
     documentDate: Date;
   }) {
-    // 1) If a clearing JE already exists (any JE for this SCN with account 328), do nothing.
+    // DEDUPE: if ANY JE for this SCN already hits account 328, do nothing.
     const existing = await this.prisma.journalEntry.findMany({
       where: { sourceType: 'SupplierInvoice', sourceId: params.scnId },
       include: { lines: { include: { account: true } } },
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: 50,
     });
 
-    const alreadyHas328 = existing.some((je) => (je.lines ?? []).some((ln: any) => ln.account?.code === '328'));
+    const alreadyHas328 = existing.some((je) =>
+      (je.lines ?? []).some((ln: any) => ln.account?.code === '328'),
+    );
     if (alreadyHas328) return;
 
-    // 2) Sum linked purchase returns in base TRY
     const linkedReturns = await this.prisma.purchaseReturn.findMany({
       where: { supplierCreditNoteId: params.scnId },
       include: { lines: true },
     });
-
     if (!linkedReturns.length) return;
 
     const totalReturnBase = linkedReturns.reduce((sum, pr) => {
@@ -82,7 +82,7 @@ export class PurchasingService {
     const acc327 = await this.getAccountByCode('327');
     const acc328 = await this.getAccountByCode('328');
 
-    await this.accounting.createPostedFromIntegration(params.actorId, {
+    const jeClear = await this.accounting.createPostedFromIntegration(params.actorId, {
       documentDate: params.documentDate,
       description: `SCN ${params.scnDocumentNo} clears Purchase Returns (Dr327/Cr328)`,
       sourceType: 'SupplierInvoice',
@@ -107,6 +107,15 @@ export class PurchasingService {
           amountCurrency: amt.toFixed(2),
         },
       ],
+    });
+
+    await this.audit.log({
+      actorId: params.actorId,
+      action: AuditAction.POST,
+      entity: 'SupplierInvoice',
+      entityId: params.scnId,
+      after: { purchaseReturnClearingJournalEntryId: jeClear.id, purchaseReturnClearingAmountBase: amt.toFixed(2) },
+      message: `Created SCN clearing JE ${jeClear.documentNo} for ${params.scnDocumentNo}`,
     });
   }
 
@@ -921,6 +930,7 @@ export class PurchasingService {
     }
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
+    if (Number.isNaN(docDate.getTime())) throw new BadRequestException('Invalid documentDate');
     const seqCode = dto.kind === InvoiceKind.CREDIT_NOTE ? 'SCN' : 'SDN';
     const docNo = await this.docNo.allocate(seqCode, docDate);
 
