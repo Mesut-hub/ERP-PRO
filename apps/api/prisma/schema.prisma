@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = ${{ secrets.CI_DATABASE_URL }}
+  url      = process.env("DATABASE_URL")
 }
 
 model User {
