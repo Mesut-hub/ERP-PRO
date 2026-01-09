@@ -39,7 +39,7 @@ jobs:
         working-directory: apps/api
         env:
           CI: "true"
-          CI_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CI_DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
           SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
           SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
         run: npm run test:ci:e2e
