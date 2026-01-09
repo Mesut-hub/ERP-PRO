@@ -210,6 +210,7 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
         documentDate: returnDate,
         lines: [
           {
+            poLineId,
             description: 'Credit note line',
             quantity: '1',
             unitPrice: '5',
@@ -246,6 +247,21 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     // NEW: verify SCN produced a clearing JE with account 328 (Dr327/Cr328)
     const scnJes = await getJEsBySource(httpServer, h, 'SupplierInvoice', creditNoteId);
     expect(scnJes.length).toBeGreaterThan(0);
+
+    const scnPostingJe = scnJes.find((je: any) =>
+      typeof je.description === 'string' && je.description.includes('Supplier invoice') && je.description.includes('posting'),
+    );
+    expect(scnPostingJe).toBeTruthy();
+
+    // NEW: posting JE must hit GRNI 327 (not expense 770) for PO-matched notes
+    expect(
+      (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '327'),
+    ).toBe(true);
+
+    expect(
+      (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '770'),
+    ).toBe(false);
+    
     expect(jeHasAccountCode(scnJes, '328')).toBe(true);
     expect(jeHasAccountCode(scnJes, '327')).toBe(true);
 

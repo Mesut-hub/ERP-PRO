@@ -45,6 +45,71 @@ export class PurchasingService {
     return lines.reduce((s, l) => s + Number(l.lineSubtotal ?? 0), 0);
   }
 
+  private async ensureScnPurchaseReturnClearingJe(params: {
+    actorId: string;
+    scnId: string;
+    scnDocumentNo: string;
+    supplierId: string | null;
+    documentDate: Date;
+  }) {
+    // 1) If a clearing JE already exists (any JE for this SCN with account 328), do nothing.
+    const existing = await this.prisma.journalEntry.findMany({
+      where: { sourceType: 'SupplierInvoice', sourceId: params.scnId },
+      include: { lines: { include: { account: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+
+    const alreadyHas328 = existing.some((je) => (je.lines ?? []).some((ln: any) => ln.account?.code === '328'));
+    if (alreadyHas328) return;
+
+    // 2) Sum linked purchase returns in base TRY
+    const linkedReturns = await this.prisma.purchaseReturn.findMany({
+      where: { supplierCreditNoteId: params.scnId },
+      include: { lines: true },
+    });
+
+    if (!linkedReturns.length) return;
+
+    const totalReturnBase = linkedReturns.reduce((sum, pr) => {
+      const prTotal = pr.lines.reduce((s, l) => s + Number((l as any).lineCostBase ?? 0), 0);
+      return sum + prTotal;
+    }, 0);
+
+    const amt = Math.round((totalReturnBase + Number.EPSILON) * 100) / 100;
+    if (amt <= 0) return;
+
+    const acc327 = await this.getAccountByCode('327');
+    const acc328 = await this.getAccountByCode('328');
+
+    await this.accounting.createPostedFromIntegration(params.actorId, {
+      documentDate: params.documentDate,
+      description: `SCN ${params.scnDocumentNo} clears Purchase Returns (Dr327/Cr328)`,
+      sourceType: 'SupplierInvoice',
+      sourceId: params.scnId,
+      lines: [
+        {
+          accountId: acc327.id,
+          partyId: params.supplierId,
+          description: `SCN ${params.scnDocumentNo} base clearing debit`,
+          debit: amt.toFixed(2),
+          credit: '0',
+          currencyCode: 'TRY',
+          amountCurrency: amt.toFixed(2),
+        },
+        {
+          accountId: acc328.id,
+          partyId: params.supplierId,
+          description: `SCN ${params.scnDocumentNo} clears Purchase Returns Clearing`,
+          debit: '0',
+          credit: amt.toFixed(2),
+          currencyCode: 'TRY',
+          amountCurrency: amt.toFixed(2),
+        },
+      ],
+    });
+  }
+
   async listPOs() {
     return this.prisma.purchaseOrder.findMany({
       orderBy: { createdAt: 'desc' },
@@ -624,6 +689,16 @@ export class PurchasingService {
       });
     }
 
+    if (postedInv && scn && scn.status === SupplierInvoiceStatus.POSTED) {
+      await this.ensureScnPurchaseReturnClearingJe({
+        actorId: actor.sub,
+        scnId: scn.id,
+        scnDocumentNo: scn.documentNo,
+        supplierId: receipt.po?.supplierId ?? null,
+        documentDate: docDate,
+      });
+    }
+
     await this.audit.log({
       actorId: actor.sub,
       action: AuditAction.POST,
@@ -814,13 +889,36 @@ export class PurchasingService {
     if (dto.kind === InvoiceKind.INVOICE) {
       throw new BadRequestException('Supplier invoice note kind must be CREDIT_NOTE or DEBIT_NOTE');
     }
+    if (!dto.lines || dto.lines.length === 0) {
+      throw new BadRequestException('Supplier invoice note must have lines');
+    }
 
     const base = await this.prisma.supplierInvoice.findUnique({
       where: { id: dto.noteOfId },
-      include: { supplier: true },
+      include: { supplier: true, lines: true },
     });
     if (!base) throw new NotFoundException('Base supplier invoice not found');
     if (base.status !== 'POSTED') throw new BadRequestException('You can only issue notes against POSTED supplier invoices');
+
+    // Determine if base invoice is PO-matched (GRNI model)
+    const baseHasPoMatch = !!base.poId && base.lines.some((l: any) => !!l.poLineId);
+
+    // If base is PO-matched, enforce poLineId on every note line (B1)
+    const allowedPoLineIds = new Set<string>();
+    if (baseHasPoMatch) {
+      for (const l of base.lines) {
+        if (l.poLineId) allowedPoLineIds.add(l.poLineId);
+      }
+
+      for (const nl of dto.lines) {
+        if (!nl.poLineId) {
+          throw new BadRequestException('poLineId is required for note lines when base invoice is PO-matched');
+        }
+        if (!allowedPoLineIds.has(nl.poLineId)) {
+          throw new BadRequestException('Invalid poLineId for this noteOf invoice');
+        }
+      }
+    }
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
     const seqCode = dto.kind === InvoiceKind.CREDIT_NOTE ? 'SCN' : 'SDN';
@@ -852,6 +950,9 @@ export class PurchasingService {
             const totals = computeLineTotals(qty, price, vatRate);
 
             return {
+              // NEW: persist poLineId if base is PO-matched (or if client provided it)
+              ...(l.poLineId ? { poLineId: l.poLineId } : {}),
+
               ...(l.productId ? { productId: l.productId } : {}),
               description: l.description,
               quantity: l.quantity,
@@ -872,7 +973,7 @@ export class PurchasingService {
       action: AuditAction.CREATE,
       entity: 'SupplierInvoice',
       entityId: created.id,
-      after: { kind: created.kind, documentNo: created.documentNo, noteOfId: created.noteOfId },
+      after: { kind: created.kind, documentNo: created.documentNo, noteOfId: created.noteOfId, baseHasPoMatch },
       message: `Created ${created.kind} ${created.documentNo} for supplier invoice ${base.documentNo}. Reason: ${dto.reason}`,
     });
 
@@ -1031,8 +1132,9 @@ export class PurchasingService {
       }
     }
 
+    // 1) Post invoice + create main financial JE + persist journalEntryId relation
     const posted = await this.prisma.$transaction(async (tx) => {
-      const upd = await tx.supplierInvoice.update({
+      await tx.supplierInvoice.update({
         where: { id: inv.id },
         data: { status: 'POSTED', postedAt: new Date(), postedById: actor.sub },
       });
@@ -1045,18 +1147,17 @@ export class PurchasingService {
         lines: journalLines,
       });
 
-      // NEW: persist relation to allow include: { journalEntry: true }
+      // Persist 1:1 link for GET /pur/invoices/:id include: { journalEntry: true }
       await tx.supplierInvoice.update({
         where: { id: inv.id },
         data: { journalEntryId: je.id },
       });
 
-      return { upd, je };
+      return { je };
     });
 
-    // NEW: if this is a CREDIT_NOTE used to approve purchase returns after invoice,
-    // clear Purchase Returns Clearing (328) back into GRNI (327) in base TRY.
-    if (inv.kind === InvoiceKind.CREDIT_NOTE) {
+    // 2) If SCN is used for purchase returns, create base TRY clearing JE: Dr 327 / Cr 328
+    /*if (inv.kind === InvoiceKind.CREDIT_NOTE) {
       const linkedReturns = await this.prisma.purchaseReturn.findMany({
         where: { supplierCreditNoteId: inv.id },
         include: { lines: true },
@@ -1072,7 +1173,6 @@ export class PurchasingService {
 
         if (amt > 0) {
           const acc328 = await this.getAccountByCode('328');
-          const acc327 = await this.getAccountByCode('327');
 
           const je2 = await this.accounting.createPostedFromIntegration(actor.sub, {
             documentDate: inv.documentDate,
@@ -1081,7 +1181,7 @@ export class PurchasingService {
             sourceId: inv.id,
             lines: [
               {
-                accountId: acc327.id,
+                accountId: accGrni.id,
                 partyId: inv.supplierId,
                 description: `SCN ${inv.documentNo} base clearing debit`,
                 debit: amt.toFixed(2),
@@ -1106,17 +1206,21 @@ export class PurchasingService {
             action: AuditAction.POST,
             entity: 'SupplierInvoice',
             entityId: inv.id,
-            after: {
-              status: 'POSTED',
-              journalEntryId: posted.je.id,
-              purchaseReturnClearingJournalEntryId: je2.id,
-              purchaseReturnClearingAmountBase: amt.toFixed(2),
-              hasPoMatch,
-            },
+            after: { purchaseReturnClearingJournalEntryId: je2.id, purchaseReturnClearingAmountBase: amt.toFixed(2) },
             message: `Posted SCN base clearing JE ${je2.documentNo} for ${inv.documentNo}`,
           });
         }
       }
+    }*/
+
+    if (inv.kind === InvoiceKind.CREDIT_NOTE) {
+      await this.ensureScnPurchaseReturnClearingJe({
+        actorId: actor.sub,
+        scnId: inv.id,
+        scnDocumentNo: inv.documentNo,
+        supplierId: inv.supplierId,
+        documentDate: inv.documentDate,
+      });
     }
 
     await this.audit.log({

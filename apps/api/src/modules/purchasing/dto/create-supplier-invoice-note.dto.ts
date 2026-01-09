@@ -18,6 +18,10 @@ class SupplierInvoiceLineDto {
   @IsOptional()
   @IsString()
   productId?: string;
+
+  @IsOptional()
+  @IsString()
+  poLineId?: string;
 }
 
 export class CreateSupplierInvoiceNoteDto {
