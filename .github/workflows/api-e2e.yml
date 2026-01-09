@@ -7,6 +7,7 @@ on:
 
 jobs:
   e2e:
+    environment: ci
     runs-on: ubuntu-latest
 
     services:
@@ -39,7 +40,7 @@ jobs:
         working-directory: apps/api
         env:
           CI: "true"
-          CI_DATABASE_URL: postgresql://erp:aM6AYeQ2xn25KhCE@localhost:5432/erp?schema=public
-          SEED_ADMIN_EMAIL: admin@example.com
-          SEED_ADMIN_PASSWORD: Welcome-123
+          DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
         run: npm run test:ci:e2e
