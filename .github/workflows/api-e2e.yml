@@ -39,7 +39,7 @@ jobs:
         working-directory: apps/api
         env:
           CI: "true"
-          DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
+          DATABASE_URL: "postgresql://erp:aM6AYeQ2xn25KhCE@localhost:5432/erp?schema=e2e"
           SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
           SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
         run: npm run test:ci:e2e
