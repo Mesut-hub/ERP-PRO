@@ -12,7 +12,14 @@
     "test": "jest",
     "test:e2e": "npx dotenv -e .env.test -- jest --config ./test/jest-e2e.json",
     "db:test:reset": "npx dotenv -e .env.test -- prisma migrate reset --force",
-    "db:test:seed": "npx dotenv -e .env.test -- prisma db seed"
+    "db:test:seed": "npx dotenv -e .env.test -- prisma db seed",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:ci:reset": "prisma db push --force-reset --accept-data-loss --schema prisma/schema.prisma",
+    "db:ci:seed": "prisma db seed --schema prisma/schema.prisma",
+    "test:ci:e2e": "npm run prisma:generate && jest --config ./test/jest-e2e.json"
+  },
+  "prisma": {
+    "seed": "ts-node --transpile-only prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
