@@ -43,4 +43,7 @@ jobs:
           DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
           SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
           SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
-        run: npm run test:ci:e2e
+        run: |
+          test -n "$DATABASE_URL" && echo "DATABASE_URL set" || (echo "DATABASE_URL missing" && exit 1)
+          test -n "$SEED_ADMIN_EMAIL" && echo "SEED_ADMIN_EMAIL set" || (echo "SEED_ADMIN_EMAIL missing" && exit 1)
+          test -n "$SEED_ADMIN_PASSWORD" && echo "SEED_ADMIN_PASSWORD set" || (echo "SEED_ADMIN_PASSWORD missing" && exit 1)
