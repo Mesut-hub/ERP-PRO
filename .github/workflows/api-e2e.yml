@@ -13,6 +13,7 @@ jobs:
       postgres:
         image: postgres:16
         env:
+          DATABASE_URL: postgresql://erp:...@localhost:5432/erp?schema=e2e
           POSTGRES_USER: erp
           POSTGRES_PASSWORD: aM6AYeQ2xn25KhCE
           POSTGRES_DB: erp
