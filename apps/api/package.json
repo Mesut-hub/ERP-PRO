@@ -11,7 +11,7 @@
     "prisma:seed": "ts-node --transpile-only prisma/seed.ts",
     "test": "jest",
     "test:e2e": "npx dotenv -e .env.test -- jest --config ./test/jest-e2e.json",
-    "db:test:reset": "npx dotenv -e .env.test -- prisma migrate reset --force",
+    "db:test:reset": "npx dotenv -e .env.test -- prisma migrate reset --force --skip-seed && npm run prisma:seed",
     "db:test:seed": "npx dotenv -e .env.test -- prisma db seed",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "db:ci:reset": "prisma db push --force-reset --accept-data-loss --schema prisma/schema.prisma",
