@@ -34,7 +34,7 @@ jobs:
           cache: npm
 
       - name: Install
-        run: npm ci
+        run: npm install
 
       - name: Run API e2e (CI)
         working-directory: apps/api
