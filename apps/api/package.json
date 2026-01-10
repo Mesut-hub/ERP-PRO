@@ -19,9 +19,6 @@
     "db:ci:seed": "prisma db seed --schema prisma/schema.prisma",
     "test:ci:e2e": "npm run prisma:generate && jest --config ./test/jest-e2e.json"
   },
-  "prisma": {
-    "seed": "ts-node --transpile-only prisma/seed.ts"
-  },
   "keywords": [],
   "author": "",
   "license": "ISC",
