@@ -40,7 +40,7 @@ jobs:
         working-directory: apps/api
         env:
           CI: "true"
-          DATABASE_URL: postgresql://erp:aM6AYeQ2xn25KhCE@localhost:5432/erp?schema=public
+          DATABASE_URL: postgresql://erp:aM6AYeQ2xn25KhCE@localhost:5432/erp?schema=e2e
           SEED_ADMIN_EMAIL: admin@example.com
           SEED_ADMIN_PASSWORD: Welcome-123
         run: npm run test:ci:e2e
