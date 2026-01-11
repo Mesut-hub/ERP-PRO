@@ -35,6 +35,13 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Prettier check
+        run: npm run format:check
+      
+      - name: Typecheck (API)
+        working-directory: apps/api
+        run: npm run typecheck
+
       - name: Run API e2e (CI)
         working-directory: apps/api
         env:
