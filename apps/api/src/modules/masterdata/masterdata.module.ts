@@ -15,7 +15,7 @@ import { ProductCategoriesModule } from './product-categories/product-categories
     UnitsModule,
     PartiesModule,
     ProductCategoriesModule,
-    ProductsModule
+    ProductsModule,
   ],
 })
 export class MasterDataModule {}

@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   AuditAction,
   CustomerInvoiceStatus,
@@ -30,12 +35,18 @@ function round2(n: number) {
 function vatRateFromCode(vatCode: string): number {
   const code = (vatCode ?? '').toUpperCase().trim();
   switch (code) {
-    case 'KDV_0': return 0;
-    case 'KDV_1': return 1;
-    case 'KDV_8': return 8;
-    case 'KDV_10': return 10;
-    case 'KDV_18': return 18;
-    case 'KDV_20': return 20;
+    case 'KDV_0':
+      return 0;
+    case 'KDV_1':
+      return 1;
+    case 'KDV_8':
+      return 8;
+    case 'KDV_10':
+      return 10;
+    case 'KDV_18':
+      return 18;
+    case 'KDV_20':
+      return 20;
     default:
       throw new BadRequestException(`Unsupported vatCode: ${vatCode}`);
   }
@@ -62,15 +73,19 @@ export class SalesService {
   }
 
   async createOrder(actorId: string, dto: any) {
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Sales order must have lines');
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('Sales order must have lines');
 
     const customer = await this.prisma.party.findUnique({ where: { id: dto.customerId } });
-    if (!customer || customer.type !== PartyType.CUSTOMER) throw new BadRequestException('customerId must be CUSTOMER');
+    if (!customer || customer.type !== PartyType.CUSTOMER)
+      throw new BadRequestException('customerId must be CUSTOMER');
 
     const wh = await this.prisma.warehouse.findUnique({ where: { id: dto.warehouseId } });
     if (!wh || !wh.isActive) throw new BadRequestException('Invalid warehouseId');
 
-    const cur = await this.prisma.currency.findUnique({ where: { code: dto.currencyCode.toUpperCase() } });
+    const cur = await this.prisma.currency.findUnique({
+      where: { code: dto.currencyCode.toUpperCase() },
+    });
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     for (const l of dto.lines) {
@@ -131,7 +146,8 @@ export class SalesService {
       include: { lines: true, customer: true },
     });
     if (!so) throw new NotFoundException('SalesOrder not found');
-    if (so.status !== SalesOrderStatus.DRAFT) throw new BadRequestException('Only DRAFT orders can be approved');
+    if (so.status !== SalesOrderStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT orders can be approved');
 
     // Compute order gross total (subtotal + vat)
     let subtotal = 0;
@@ -236,10 +252,13 @@ export class SalesService {
       include: { lines: true },
     });
     if (!so) throw new NotFoundException('SalesOrder not found');
-    if (so.status === SalesOrderStatus.CANCELED) throw new BadRequestException('SalesOrder canceled');
-    if (so.status === SalesOrderStatus.DRAFT) throw new ForbiddenException('SalesOrder must be approved before delivery');
+    if (so.status === SalesOrderStatus.CANCELED)
+      throw new BadRequestException('SalesOrder canceled');
+    if (so.status === SalesOrderStatus.DRAFT)
+      throw new ForbiddenException('SalesOrder must be approved before delivery');
 
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Delivery must have lines');
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('Delivery must have lines');
 
     const soLineById = new Map(so.lines.map((l) => [l.id, l]));
 
@@ -321,7 +340,8 @@ export class SalesService {
     await this.prisma.$transaction(async (tx) => {
       for (const l of delivery.lines) {
         const qty = Number(l.quantity);
-        if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Invalid delivery line quantity');
+        if (!Number.isFinite(qty) || qty <= 0)
+          throw new BadRequestException('Invalid delivery line quantity');
 
         const alloc = await this.fifo.allocateOutbound(tx as any, {
           productId: l.productId,
@@ -367,7 +387,7 @@ export class SalesService {
         await (tx as any).salesDeliveryLine.update({
           where: { id: u.id },
           data: { unitCost: u.unitCost, lineCost: u.lineCost },
-        })
+        });
       }
     });
 
@@ -486,7 +506,9 @@ export class SalesService {
     });
 
     if (!je) {
-      throw new BadRequestException('Cannot backfill: no POSTED COGS journal entry found for this delivery');
+      throw new BadRequestException(
+        'Cannot backfill: no POSTED COGS journal entry found for this delivery',
+      );
     }
 
     // Total COGS = debit on 621
@@ -494,32 +516,37 @@ export class SalesService {
     const totalCogs = cogsLines.reduce((s, l) => s + Number(l.debit), 0);
 
     if (totalCogs <= 0) {
-      throw new BadRequestException('Cannot backfill: COGS amount is zero; delivery likely has no cost posting');
+      throw new BadRequestException(
+        'Cannot backfill: COGS amount is zero; delivery likely has no cost posting',
+      );
     }
 
     // Allocate by quantity (MVP). If multiple products, this is still consistent but not perfect.
     // For perfect allocation across products, you’d need product-level cost captured per line originally.
     const totalQty = delivery.lines.reduce((s, l) => s + Number(l.quantity), 0);
-    if (totalQty <= 0) throw new BadRequestException('Invalid delivery lines: total quantity is zero');
+    if (totalQty <= 0)
+      throw new BadRequestException('Invalid delivery lines: total quantity is zero');
 
-    const updates = delivery.lines.map((l) => {
-      // Only fill missing ones
-      if (l.unitCost !== null && l.lineCost !== null) return null;
+    const updates = delivery.lines
+      .map((l) => {
+        // Only fill missing ones
+        if (l.unitCost !== null && l.lineCost !== null) return null;
 
-      const qty = Number(l.quantity);
-      const ratio = qty / totalQty;
+        const qty = Number(l.quantity);
+        const ratio = qty / totalQty;
 
-      const lineCost = Math.round((totalCogs * ratio + Number.EPSILON) * 100) / 100;
-      const unitCost = qty <= 0 ? 0 : lineCost / qty; // derived
+        const lineCost = Math.round((totalCogs * ratio + Number.EPSILON) * 100) / 100;
+        const unitCost = qty <= 0 ? 0 : lineCost / qty; // derived
 
-      return this.prisma.salesDeliveryLine.update({
-        where: { id: l.id },
-        data: {
-          unitCost: unitCost.toFixed(6) as any,
-          lineCost: lineCost.toFixed(2) as any,
-        },
-      });
-    }).filter(Boolean) as any[];
+        return this.prisma.salesDeliveryLine.update({
+          where: { id: l.id },
+          data: {
+            unitCost: unitCost.toFixed(6) as any,
+            lineCost: lineCost.toFixed(2) as any,
+          },
+        });
+      })
+      .filter(Boolean) as any[];
 
     await this.prisma.$transaction(updates);
 
@@ -532,9 +559,15 @@ export class SalesService {
       message: `Backfilled delivery cost snapshot for ${delivery.documentNo} using JE ${je.documentNo}. Allocation=by_quantity.`,
     });
 
-    return { ok: true, backfilled: true, deliveryId: delivery.id, journalEntryId: je.id, totalCogs: totalCogs.toFixed(2) };
+    return {
+      ok: true,
+      backfilled: true,
+      deliveryId: delivery.id,
+      journalEntryId: je.id,
+      totalCogs: totalCogs.toFixed(2),
+    };
   }
-    
+
   async createSalesReturn(actor: JwtAccessPayload, deliveryId: string, dto: CreateSalesReturnDto) {
     const delivery = await this.prisma.salesDelivery.findUnique({
       where: { id: deliveryId },
@@ -574,7 +607,9 @@ export class SalesService {
       }
 
       if (dl.unitCost === null || dl.lineCost === null) {
-        throw new BadRequestException(`Delivery line ${dl.id} is missing cost snapshot; cannot return`);
+        throw new BadRequestException(
+          `Delivery line ${dl.id} is missing cost snapshot; cannot return`,
+        );
       }
     }
 
@@ -602,10 +637,10 @@ export class SalesService {
           create: dto.lines.map((rl) => {
             const dl = deliveryLineById.get(rl.deliveryLineId)!;
             const qty = Number(rl.quantity);
-            
+
             const deliveredQty = Number(dl.quantity);
             const deliveredLineCost = Number(dl.lineCost);
-            
+
             // proportional cost for partial return
             const ratio = qty / deliveredQty;
             const lineCost = Math.round((deliveredLineCost * ratio + Number.EPSILON) * 100) / 100;
@@ -690,7 +725,12 @@ export class SalesService {
       message: `Posted sales return ${createdReturn.documentNo} with JE ${je.documentNo}. Reason: ${dto.reason}`,
     });
 
-    return { ok: true, salesReturnId: createdReturn.id, stockMoveId: move.id, journalEntryId: je.id };
+    return {
+      ok: true,
+      salesReturnId: createdReturn.id,
+      stockMoveId: move.id,
+      journalEntryId: je.id,
+    };
   }
 
   private async vatPercent(vatCode: VatRateCode): Promise<number> {
@@ -708,12 +748,16 @@ export class SalesService {
   }
 
   async createInvoice(actorId: string, dto: any) {
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Invoice must have lines');
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('Invoice must have lines');
 
     const customer = await this.prisma.party.findUnique({ where: { id: dto.customerId } });
-    if (!customer || customer.type !== PartyType.CUSTOMER) throw new BadRequestException('customerId must be CUSTOMER');
+    if (!customer || customer.type !== PartyType.CUSTOMER)
+      throw new BadRequestException('customerId must be CUSTOMER');
 
-    const cur = await this.prisma.currency.findUnique({ where: { code: dto.currencyCode.toUpperCase() } });
+    const cur = await this.prisma.currency.findUnique({
+      where: { code: dto.currencyCode.toUpperCase() },
+    });
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     if (dto.soId) {
@@ -818,14 +862,15 @@ export class SalesService {
     // Force same customer + currency as base invoice (professional control)
     const customerId = base.customerId;
     const currencyCode = base.currencyCode;
-    
+
     // OPTIONAL but very professional: ensure VatRate exists and active in DB
     const vatCodes = Array.from(new Set(dto.lines.map((l) => l.vatCode)));
     const vatRates = await this.prisma.vatRate.findMany({
       where: { code: { in: vatCodes as any }, isActive: true },
       select: { code: true, percent: true },
     });
-    if (vatRates.length !== vatCodes.length) throw new BadRequestException('One or more VAT codes are invalid/inactive');
+    if (vatRates.length !== vatCodes.length)
+      throw new BadRequestException('One or more VAT codes are invalid/inactive');
     const vatPercentByCode = new Map(vatRates.map((v) => [v.code, Number(v.percent)]));
 
     // Compute line amounts and totals
@@ -848,7 +893,7 @@ export class SalesService {
         quantity: l.quantity,
         unitPrice: l.unitPrice,
         vatCode: l.vatCode as any,
-        
+
         lineSubtotal: lineSubtotal.toFixed(2),
         lineVat: lineVat.toFixed(2),
         lineTotal: lineTotal.toFixed(2),
@@ -896,14 +941,15 @@ export class SalesService {
 
     return created;
   }
-  
+
   async postInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.customerInvoice.findUnique({
       where: { id },
       include: { customer: true },
     });
     if (!inv) throw new NotFoundException('CustomerInvoice not found');
-    if (inv.status !== CustomerInvoiceStatus.DRAFT) throw new BadRequestException('Only DRAFT invoices can be posted');
+    if (inv.status !== CustomerInvoiceStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT invoices can be posted');
 
     await this.postingLock.assertPostingAllowed(
       actor,
@@ -915,14 +961,15 @@ export class SalesService {
     const accAR = await this.prisma.account.findUnique({ where: { code: '120' } });
     const accSales = await this.prisma.account.findUnique({ where: { code: '600' } });
     const accVatPayable = await this.prisma.account.findUnique({ where: { code: '391' } });
-    if (!accAR || !accSales || !accVatPayable) throw new BadRequestException('Missing required accounts (120, 600, 391)');
+    if (!accAR || !accSales || !accVatPayable)
+      throw new BadRequestException('Missing required accounts (120, 600, 391)');
 
     const subtotal = Number(inv.subtotal);
     const vatTotal = Number(inv.vatTotal);
     const grandTotal = Number(inv.grandTotal);
 
     const isCredit = inv.kind === InvoiceKind.CREDIT_NOTE;
-    
+
     // Helper to flip debit/credit cleanly for CREDIT_NOTE
     const dr = (amt: number) => (isCredit ? '0' : amt.toFixed(2));
     const cr = (amt: number) => (isCredit ? amt.toFixed(2) : '0');
@@ -964,13 +1011,15 @@ export class SalesService {
 
     const debit = journalLines.reduce((s, l) => s + Number(l.debit), 0);
     const credit = journalLines.reduce((s, l) => s + Number(l.credit), 0);
-    if (Math.abs(debit - credit) > 0.005) throw new BadRequestException('Auto journal not balanced');
+    if (Math.abs(debit - credit) > 0.005)
+      throw new BadRequestException('Auto journal not balanced');
 
     // Post invoice (transaction) then create JE via AccountingService
     const invPosted = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.customerInvoice.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('CustomerInvoice not found');
-      if (locked.status !== CustomerInvoiceStatus.DRAFT) throw new BadRequestException('Already posted/canceled');
+      if (locked.status !== CustomerInvoiceStatus.DRAFT)
+        throw new BadRequestException('Already posted/canceled');
 
       return tx.customerInvoice.update({
         where: { id },

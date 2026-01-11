@@ -32,13 +32,21 @@ export class SalesController {
 
   @Post('orders/:id/approve')
   @RequirePermissions('sales.order.approve')
-  approveOrder(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ApproveSalesOrderDto) {
+  approveOrder(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: ApproveSalesOrderDto,
+  ) {
     return this.service.approveOrder(actor, id, dto.reason);
   }
 
   @Post('orders/:id/deliver')
   @RequirePermissions('sales.order.deliver')
-  deliver(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: DeliverSalesOrderDto) {
+  deliver(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: DeliverSalesOrderDto,
+  ) {
     return this.service.deliverOrder(actor, id, dto);
   }
 
@@ -56,7 +64,11 @@ export class SalesController {
 
   @Post('invoices/:id/post')
   @RequirePermissions('sales.invoice.post')
-  postInvoice(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
+  postInvoice(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: PostingOverrideDto,
+  ) {
     return this.service.postInvoice(actor, id, dto.reason);
   }
 

@@ -1,4 +1,12 @@
-import { IsArray, IsDateString, IsNumberString, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsDateString,
+  IsNumberString,
+  IsOptional,
+  IsString,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 class SalesReturnLineDto {

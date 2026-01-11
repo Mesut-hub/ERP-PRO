@@ -1,4 +1,13 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Put,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RequirePermissions } from '../../common/decorators/require-permissions.decorator';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
@@ -83,7 +92,9 @@ export class FinanceAdminController {
   @Get('settings/posting-lock-date')
   @RequirePermissions('fin.period.read')
   async getPostingLockDate() {
-    const lock = await this.prisma.systemSetting.findUnique({ where: { key: 'POSTING_LOCK_DATE' } });
+    const lock = await this.prisma.systemSetting.findUnique({
+      where: { key: 'POSTING_LOCK_DATE' },
+    });
     return { key: 'POSTING_LOCK_DATE', value: lock?.value ?? '1970-01-01' };
   }
 

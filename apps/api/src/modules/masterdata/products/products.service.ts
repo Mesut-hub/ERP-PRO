@@ -36,7 +36,9 @@ export class ProductsService {
     }
 
     if (data.priceCurrencyCode) {
-      const cur = await this.prisma.currency.findUnique({ where: { code: data.priceCurrencyCode.toUpperCase() } });
+      const cur = await this.prisma.currency.findUnique({
+        where: { code: data.priceCurrencyCode.toUpperCase() },
+      });
       if (!cur) throw new BadRequestException('Invalid priceCurrencyCode');
       data.priceCurrencyCode = cur.code;
     }
@@ -84,7 +86,9 @@ export class ProductsService {
       if (!cat) throw new BadRequestException('Invalid categoryId');
     }
     if (data.priceCurrencyCode) {
-      const cur = await this.prisma.currency.findUnique({ where: { code: data.priceCurrencyCode.toUpperCase() } });
+      const cur = await this.prisma.currency.findUnique({
+        where: { code: data.priceCurrencyCode.toUpperCase() },
+      });
       if (!cur) throw new BadRequestException('Invalid priceCurrencyCode');
       data.priceCurrencyCode = cur.code;
     }

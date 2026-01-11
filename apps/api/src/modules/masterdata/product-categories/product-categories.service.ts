@@ -36,7 +36,11 @@ export class ProductCategoriesService {
     return created;
   }
 
-  async update(actorId: string, id: string, data: { name?: string; parentId?: string; isActive?: boolean }) {
+  async update(
+    actorId: string,
+    id: string,
+    data: { name?: string; parentId?: string; isActive?: boolean },
+  ) {
     const before = await this.prisma.productCategory.findUnique({ where: { id } });
     if (!before) throw new NotFoundException('Category not found');
 

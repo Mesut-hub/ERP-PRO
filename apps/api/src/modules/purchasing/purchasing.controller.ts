@@ -37,7 +37,11 @@ export class PurchasingController {
 
   @Post('pos/:id/receive')
   @RequirePermissions('pur.po.receive')
-  receivePO(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ReceivePoDto) {
+  receivePO(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: ReceivePoDto,
+  ) {
     return this.service.receivePO(actor, id, dto);
   }
 
@@ -61,13 +65,20 @@ export class PurchasingController {
 
   @Post('invoices/:id/post')
   @RequirePermissions('pur.invoice.post')
-  postInvoice(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
+  postInvoice(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: PostingOverrideDto,
+  ) {
     return this.service.postSupplierInvoice(actor, id, dto.reason);
   }
 
   @Post('invoice-notes')
   @RequirePermissions('pur.invoice.manage')
-  createInvoiceNote(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreateSupplierInvoiceNoteDto) {
+  createInvoiceNote(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Body() dto: CreateSupplierInvoiceNoteDto,
+  ) {
     return this.service.createSupplierInvoiceNote(actor, dto);
   }
 

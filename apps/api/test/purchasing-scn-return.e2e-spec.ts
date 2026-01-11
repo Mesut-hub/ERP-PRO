@@ -5,10 +5,11 @@ import request from 'supertest';
 import { AppModule } from '../src/modules/app/app.module';
 
 describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
-
   async function getJEsBySource(httpServer: any, h: any, sourceType: string, sourceId: string) {
     const res = await request(httpServer)
-      .get(`/acc/journals/by-source?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`)
+      .get(
+        `/acc/journals/by-source?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`,
+      )
       .set(h)
       .expect(200);
     return res.body;
@@ -143,7 +144,10 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
 
     const receiptId = grnRes.body.receiptId;
 
-    const receiptRes = await request(httpServer).get(`/pur/receipts/${receiptId}`).set(h).expect(200);
+    const receiptRes = await request(httpServer)
+      .get(`/pur/receipts/${receiptId}`)
+      .set(h)
+      .expect(200);
     const receiptLineId = receiptRes.body.lines[0].id;
 
     // create invoice
@@ -224,7 +228,11 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     const creditNoteId = cnRes.body.id;
 
     // post credit note
-    await request(httpServer).post(`/pur/invoices/${creditNoteId}/post`).set(h).send({}).expect(201);
+    await request(httpServer)
+      .post(`/pur/invoices/${creditNoteId}/post`)
+      .set(h)
+      .send({})
+      .expect(201);
 
     // return should succeed with SCN
     const okReturn = await request(httpServer)
@@ -248,34 +256,38 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     const scnJes = await getJEsBySource(httpServer, h, 'SupplierInvoice', creditNoteId);
     expect(scnJes.length).toBeGreaterThan(0);
 
-    const scnPostingJe = scnJes.find((je: any) =>
-      typeof je.description === 'string' && je.description.includes('Supplier invoice') && je.description.includes('posting'),
+    const scnPostingJe = scnJes.find(
+      (je: any) =>
+        typeof je.description === 'string' &&
+        je.description.includes('Supplier invoice') &&
+        je.description.includes('posting'),
     );
     expect(scnPostingJe).toBeTruthy();
 
     expect(
-      (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '320' && Number(ln.debit) > 0),
+      (scnPostingJe.lines ?? []).some(
+        (ln: any) => ln.account?.code === '320' && Number(ln.debit) > 0,
+      ),
     ).toBe(true);
 
     // NEW: posting JE must hit GRNI 327 (not expense 770) for PO-matched notes
-    expect(
-      (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '327'),
-    ).toBe(true);
+    expect((scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '327')).toBe(true);
 
-    expect(
-      (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '770'),
-    ).toBe(false);
-    
+    expect((scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '770')).toBe(false);
+
     expect(jeHasAccountCode(scnJes, '328')).toBe(true);
     expect(jeHasAccountCode(scnJes, '327')).toBe(true);
 
-    const scnGet = await request(httpServer).get(`/pur/invoices/${creditNoteId}`).set(h).expect(200);
+    const scnGet = await request(httpServer)
+      .get(`/pur/invoices/${creditNoteId}`)
+      .set(h)
+      .expect(200);
     expect(scnGet.body.journalEntry).toBeTruthy();
 
     // Stronger: verify 328 is credited (clearing)
-    expect(
-      jeHasAnyLine(scnJes, (ln) => ln.account?.code === '328' && Number(ln.credit) > 0),
-    ).toBe(true);
+    expect(jeHasAnyLine(scnJes, (ln) => ln.account?.code === '328' && Number(ln.credit) > 0)).toBe(
+      true,
+    );
 
     // NEW: verify PurchaseReturn JE exists and uses 328 and 150
     const prJes = await getJEsBySource(httpServer, h, 'PurchaseReturn', purchaseReturnId);
@@ -284,11 +296,11 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     expect(jeHasAccountCode(prJes, '150')).toBe(true); // Cr 150
 
     // Stronger: check at least one line credits 150 and one line debits 328
-    expect(
-      jeHasAnyLine(prJes, (ln) => ln.account?.code === '150' && Number(ln.credit) > 0),
-    ).toBe(true);
-    expect(
-      jeHasAnyLine(prJes, (ln) => ln.account?.code === '328' && Number(ln.debit) > 0),
-    ).toBe(true);
+    expect(jeHasAnyLine(prJes, (ln) => ln.account?.code === '150' && Number(ln.credit) > 0)).toBe(
+      true,
+    );
+    expect(jeHasAnyLine(prJes, (ln) => ln.account?.code === '328' && Number(ln.debit) > 0)).toBe(
+      true,
+    );
   });
 });

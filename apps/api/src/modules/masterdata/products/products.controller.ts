@@ -27,7 +27,11 @@ export class ProductsController {
 
   @Patch(':id')
   @RequirePermissions('md.product.manage')
-  update(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: UpdateProductDto) {
+  update(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateProductDto,
+  ) {
     return this.service.update(actor.sub, id, dto);
   }
 }

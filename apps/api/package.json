@@ -14,7 +14,6 @@
     "test:e2e": "npx dotenv -e .env.test -- jest --config ./test/jest-e2e.json",
     "db:test:reset": "npx dotenv -e .env.test -- prisma migrate reset --force",
     "db:test:seed": "npx dotenv -e .env.test -- prisma db seed",
-
     "db:ci:reset": "prisma migrate reset --force --schema prisma/schema.prisma",
     "test:ci:e2e": "jest --config ./test/jest-e2e.json"
   },

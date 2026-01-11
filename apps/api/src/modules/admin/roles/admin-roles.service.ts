@@ -51,14 +51,17 @@ export class AdminRolesService {
     if (!role) throw new NotFoundException('Role not found');
 
     const perms = await this.prisma.permission.findMany({ where: { id: { in: permissionIds } } });
-    if (perms.length !== permissionIds.length) throw new BadRequestException('One or more permissionIds invalid');
+    if (perms.length !== permissionIds.length)
+      throw new BadRequestException('One or more permissionIds invalid');
 
     const beforeIds = role.permissions.map((rp) => rp.permissionId).sort();
     const afterIds = permissionIds.slice().sort();
 
     await this.prisma.$transaction(async (tx) => {
       await tx.rolePermission.deleteMany({ where: { roleId } });
-      await tx.rolePermission.createMany({ data: permissionIds.map((permissionId) => ({ roleId, permissionId })) });
+      await tx.rolePermission.createMany({
+        data: permissionIds.map((permissionId) => ({ roleId, permissionId })),
+      });
     });
 
     await this.audit.log({

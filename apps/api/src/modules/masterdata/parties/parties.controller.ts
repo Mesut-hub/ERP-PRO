@@ -28,7 +28,11 @@ export class PartiesController {
 
   @Patch(':id')
   @RequirePermissions('md.party.manage')
-  update(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: UpdatePartyDto) {
+  update(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdatePartyDto,
+  ) {
     return this.service.update(actor.sub, id, dto);
   }
 }

@@ -15,7 +15,11 @@ export class ExchangeRatesController {
   @Get()
   @RequirePermissions('md.exchange_rate.read')
   list(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.service.list({ fromCode: from?.toUpperCase(), toCode: to?.toUpperCase(), take: 100 });
+    return this.service.list({
+      fromCode: from?.toUpperCase(),
+      toCode: to?.toUpperCase(),
+      take: 100,
+    });
   }
 
   @Post()

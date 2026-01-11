@@ -29,14 +29,17 @@ export class AccountingService {
   }
 
   async createJournal(actorId: string, dto: any) {
-    if (!dto.lines || dto.lines.length < 2) throw new BadRequestException('Journal must have at least 2 lines');
+    if (!dto.lines || dto.lines.length < 2)
+      throw new BadRequestException('Journal must have at least 2 lines');
 
     // Validate accounts exist
     for (const l of dto.lines) {
       const a = await this.prisma.account.findUnique({ where: { id: l.accountId } });
       if (!a) throw new BadRequestException('Invalid accountId');
-      if (Number(l.debit) < 0 || Number(l.credit) < 0) throw new BadRequestException('Negative amounts not allowed');
-      if (Number(l.debit) > 0 && Number(l.credit) > 0) throw new BadRequestException('Line cannot have both debit and credit');
+      if (Number(l.debit) < 0 || Number(l.credit) < 0)
+        throw new BadRequestException('Negative amounts not allowed');
+      if (Number(l.debit) > 0 && Number(l.credit) > 0)
+        throw new BadRequestException('Line cannot have both debit and credit');
     }
 
     this.validateBalanced(dto.lines);
@@ -81,9 +84,13 @@ export class AccountingService {
   }
 
   async postJournal(actor: JwtAccessPayload, id: string, overrideReason?: string) {
-    const je = await this.prisma.journalEntry.findUnique({ where: { id }, include: { lines: true } });
+    const je = await this.prisma.journalEntry.findUnique({
+      where: { id },
+      include: { lines: true },
+    });
     if (!je) throw new NotFoundException('JournalEntry not found');
-    if (je.status !== JournalStatus.DRAFT) throw new BadRequestException('Only DRAFT journals can be posted');
+    if (je.status !== JournalStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT journals can be posted');
 
     await this.postingLock.assertPostingAllowed(
       actor,
@@ -91,7 +98,9 @@ export class AccountingService {
       `Accounting.postJournal journalId=${je.id}`,
       overrideReason,
     );
-    this.validateBalanced(je.lines.map((l) => ({ debit: l.debit.toString(), credit: l.credit.toString() })));
+    this.validateBalanced(
+      je.lines.map((l) => ({ debit: l.debit.toString(), credit: l.credit.toString() })),
+    );
 
     const updated = await this.prisma.journalEntry.update({
       where: { id },
@@ -138,9 +147,12 @@ export class AccountingService {
       include: { lines: true },
     });
     if (!original) throw new NotFoundException('JournalEntry not found');
-    if (original.status !== 'POSTED') throw new BadRequestException('Only POSTED journals can be reversed');
+    if (original.status !== 'POSTED')
+      throw new BadRequestException('Only POSTED journals can be reversed');
 
-    const existing = await this.prisma.journalEntry.findFirst({ where: { reversalOfId: original.id } });
+    const existing = await this.prisma.journalEntry.findFirst({
+      where: { reversalOfId: original.id },
+    });
     if (existing) throw new BadRequestException('Journal already reversed');
 
     const revDate = new Date(dto.documentDate);
@@ -199,33 +211,45 @@ export class AccountingService {
       action: AuditAction.POST,
       entity: 'JournalEntry',
       entityId: reversal.id,
-      after: { reversalOfId: original.id, reason: dto.reason, reversalDocumentNo: reversal.documentNo },
+      after: {
+        reversalOfId: original.id,
+        reason: dto.reason,
+        reversalDocumentNo: reversal.documentNo,
+      },
       message: `Reversed JE ${original.documentNo} with ${reversal.documentNo}. Reason: ${dto.reason}`,
     });
 
-    return { ok: true, reversalJournalEntryId: reversal.id, reversalDocumentNo: reversal.documentNo };
+    return {
+      ok: true,
+      reversalJournalEntryId: reversal.id,
+      reversalDocumentNo: reversal.documentNo,
+    };
   }
 
   /**
    * Centralized integration helper (Purchasing/Sales/Payments should use this).
    * Creates a JE already POSTED and returns it.
    */
-  async createPostedFromIntegration(actorId: string, input: {
-    documentDate: Date;
-    description: string;
-    sourceType: string;
-    sourceId: string;
-    lines: Array<{
-      accountId: string;
-      partyId?: string | null;
-      description?: string;
-      debit: string;
-      credit: string;
-      currencyCode?: string | null;
-      amountCurrency?: string | null;
-    }>;
-  }) {
-    if (!input.lines || input.lines.length < 2) throw new BadRequestException('Journal must have at least 2 lines');
+  async createPostedFromIntegration(
+    actorId: string,
+    input: {
+      documentDate: Date;
+      description: string;
+      sourceType: string;
+      sourceId: string;
+      lines: Array<{
+        accountId: string;
+        partyId?: string | null;
+        description?: string;
+        debit: string;
+        credit: string;
+        currencyCode?: string | null;
+        amountCurrency?: string | null;
+      }>;
+    },
+  ) {
+    if (!input.lines || input.lines.length < 2)
+      throw new BadRequestException('Journal must have at least 2 lines');
     this.validateBalanced(input.lines);
 
     const docNo = await this.docNo.allocate('JE', input.documentDate);

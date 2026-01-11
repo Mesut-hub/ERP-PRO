@@ -5,9 +5,7 @@ export type CurrencyCode = string; // e.g. "TRY", "USD", "EUR"
 
 @Injectable()
 export class FxService {
-  constructor(
-    private readonly prisma: PrismaService
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Normalize any datetime into Istanbul "day key" stored as DateTime at 00:00.
@@ -18,22 +16,26 @@ export class FxService {
   toIstanbulDayKey(d: Date): Date {
     // Convert to ISO date in Europe/Istanbul, then create a Date at 00:00Z of that date.
     // This keeps a stable day key without extra libs.
-    const parts = new Intl.DateTimeFormat('en-CA', { 
+    const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Europe/Istanbul',
       year: 'numeric',
       month: '2-digit',
-      day: '2-digit' 
+      day: '2-digit',
     }).formatToParts(d);
 
-    const y = parts.find(p => p.type === 'year')?.value;
-    const m = parts.find(p => p.type === 'month')?.value;
-    const day = parts.find(p => p.type === 'day')?.value;
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
     if (!y || !m || !day) throw new BadRequestException('Failed to normalize date');
     // Use UTC midnight of that calendar date as the day key
     return new Date(`${y}-${m}-${day}T00:00:00.000Z`);
   }
 
-  private async getDirectRate(fromCode: string, toCode: string, when: Date): Promise<number | null> {
+  private async getDirectRate(
+    fromCode: string,
+    toCode: string,
+    when: Date,
+  ): Promise<number | null> {
     const dayKey = this.toIstanbulDayKey(when);
     const row = await this.prisma.exchangeRate.findFirst({
       where: { fromCode, toCode, rateDate: dayKey },
@@ -83,6 +85,8 @@ export class FxService {
   private throwMissing(fromCode: string, toCode: string, when: Date): never {
     const dayKey = this.toIstanbulDayKey(when);
     const ymd = dayKey.toISOString().slice(0, 10);
-    throw new BadRequestException(`Missing exchange rate ${fromCode}->${toCode} for Istanbul day ${ymd}`);
+    throw new BadRequestException(
+      `Missing exchange rate ${fromCode}->${toCode} for Istanbul day ${ymd}`,
+    );
   }
 }

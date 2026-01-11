@@ -9,6 +9,6 @@ import { SequenceModule } from '../common/sequence/sequence.module';
   imports: [FinanceModule, AccountingModule, SequenceModule],
   providers: [PaymentsService],
   controllers: [PaymentsController],
-  exports: [PaymentsService]
+  exports: [PaymentsService],
 })
 export class PaymentsModule {}

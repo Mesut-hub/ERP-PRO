@@ -1,5 +1,10 @@
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { PostingLockService } from '../finance/posting-lock.service';
@@ -42,12 +47,16 @@ export class InventoryService {
       if (!fromId) throw new BadRequestException('fromWarehouseId required for ISSUE');
     }
     if (type === 'TRANSFER') {
-      if (!fromId || !toId) throw new BadRequestException('fromWarehouseId and toWarehouseId required for TRANSFER');
-      if (fromId === toId) throw new BadRequestException('fromWarehouseId and toWarehouseId cannot be same');
+      if (!fromId || !toId)
+        throw new BadRequestException('fromWarehouseId and toWarehouseId required for TRANSFER');
+      if (fromId === toId)
+        throw new BadRequestException('fromWarehouseId and toWarehouseId cannot be same');
     }
     if (type === 'ADJUSTMENT') {
-      if (!toId && !fromId) throw new BadRequestException('fromWarehouseId or toWarehouseId required for ADJUSTMENT');
-      if (fromId && toId) throw new BadRequestException('ADJUSTMENT must use only one warehouse (from OR to)');
+      if (!toId && !fromId)
+        throw new BadRequestException('fromWarehouseId or toWarehouseId required for ADJUSTMENT');
+      if (fromId && toId)
+        throw new BadRequestException('ADJUSTMENT must use only one warehouse (from OR to)');
     }
   }
 
@@ -55,7 +64,8 @@ export class InventoryService {
     const documentDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
     this.validateWarehouses(dto.type, dto.fromWarehouseId, dto.toWarehouseId);
 
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('At least one line is required');
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('At least one line is required');
 
     // Validate warehouses exist if provided
     if (dto.fromWarehouseId) {
@@ -107,7 +117,12 @@ export class InventoryService {
       action: AuditAction.CREATE,
       entity: 'StockMove',
       entityId: created.id,
-      after: { id: created.id, documentNo: created.documentNo, type: created.type, status: created.status },
+      after: {
+        id: created.id,
+        documentNo: created.documentNo,
+        type: created.type,
+        status: created.status,
+      },
       message: `Created stock move ${created.documentNo}`,
     });
 
@@ -156,7 +171,8 @@ export class InventoryService {
       include: { lines: true },
     });
     if (!move) throw new NotFoundException('StockMove not found');
-    if (move.status !== StockMoveStatus.DRAFT) throw new BadRequestException('Only DRAFT moves can be posted');
+    if (move.status !== StockMoveStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT moves can be posted');
 
     await this.postingLock.assertPostingAllowed(
       actor,
@@ -164,7 +180,11 @@ export class InventoryService {
       `Inventory.postMove moveId=${move.id}`,
       overrideReason,
     );
-    this.validateWarehouses(move.type, move.fromWarehouseId ?? undefined, move.toWarehouseId ?? undefined);
+    this.validateWarehouses(
+      move.type,
+      move.fromWarehouseId ?? undefined,
+      move.toWarehouseId ?? undefined,
+    );
 
     // Validate stock availability for OUT movements (ISSUE, TRANSFER, ADJUSTMENT negative)
     if (move.type === 'ISSUE' || move.type === 'TRANSFER') {
@@ -184,7 +204,8 @@ export class InventoryService {
     const result = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.stockMove.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('StockMove not found');
-      if (locked.status !== StockMoveStatus.DRAFT) throw new BadRequestException('Move already posted/canceled');
+      if (locked.status !== StockMoveStatus.DRAFT)
+        throw new BadRequestException('Move already posted/canceled');
 
       const ledgerCreates: any[] = [];
 

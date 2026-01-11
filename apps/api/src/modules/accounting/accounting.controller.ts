@@ -29,7 +29,10 @@ export class AccountingController {
   // NEW: query by integration source (PurchaseReturn, SupplierInvoice, SalesDelivery, etc.)
   @Get('journals/by-source')
   @RequirePermissions('acc.journal.read')
-  listJournalsBySource(@Query('sourceType') sourceType: string, @Query('sourceId') sourceId: string) {
+  listJournalsBySource(
+    @Query('sourceType') sourceType: string,
+    @Query('sourceId') sourceId: string,
+  ) {
     return this.service.listJournalEntriesBySource(sourceType, sourceId);
   }
 
@@ -41,13 +44,21 @@ export class AccountingController {
 
   @Post('journals/:id/post')
   @RequirePermissions('acc.journal.post')
-  post(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
+  post(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: PostingOverrideDto,
+  ) {
     return this.service.postJournal(actor, id, dto.reason);
   }
 
   @Post('journals/:id/reverse')
   @RequirePermissions('acc.journal.post')
-  reverse(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: ReverseJournalDto) {
+  reverse(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: ReverseJournalDto,
+  ) {
     return this.service.reverseJournal(actor, id, dto);
   }
 }

@@ -8,11 +8,16 @@ import { FxService } from './fx/fx.service';
 @Controller('md/exchange-rates')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
 export class ExchangeRateAdminController {
-  constructor(private readonly prisma: PrismaService, private readonly fx: FxService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fx: FxService,
+  ) {}
 
   @Post()
   @RequirePermissions('md.exchange_rate.manage')
-  async upsert(@Body() dto: { fromCode: string; toCode: string; rate: string; date: string; source?: string }) {
+  async upsert(
+    @Body() dto: { fromCode: string; toCode: string; rate: string; date: string; source?: string },
+  ) {
     const fromCode = dto.fromCode.toUpperCase();
     const toCode = dto.toCode.toUpperCase();
     const rate = Number(dto.rate);
@@ -24,7 +29,13 @@ export class ExchangeRateAdminController {
     const row = await this.prisma.exchangeRate.upsert({
       where: { fromCode_toCode_rateDate: { fromCode, toCode, rateDate: dayKey } },
       update: { rate: rate.toFixed(8) as any, source: dto.source ?? 'manual' },
-      create: { fromCode, toCode, rateDate: dayKey, rate: rate.toFixed(8) as any, source: dto.source ?? 'manual' },
+      create: {
+        fromCode,
+        toCode,
+        rateDate: dayKey,
+        rate: rate.toFixed(8) as any,
+        source: dto.source ?? 'manual',
+      },
     });
 
     return { ok: true, id: row.id, fromCode, toCode, rateDate: dayKey.toISOString().slice(0, 10) };

@@ -25,7 +25,9 @@ export class PostingLockService {
     let blockedMsg: string | null = null;
 
     // 1) Global lock date
-    const lock = await this.prisma.systemSetting.findUnique({ where: { key: 'POSTING_LOCK_DATE' } });
+    const lock = await this.prisma.systemSetting.findUnique({
+      where: { key: 'POSTING_LOCK_DATE' },
+    });
     if (lock) {
       const lockDate = new Date(lock.value);
       lockDate.setHours(23, 59, 59, 999);
@@ -51,7 +53,9 @@ export class PostingLockService {
 
     const clean = (overrideReason ?? '').trim();
     if (!clean || clean.length < 15) {
-      throw new ForbiddenException(`Override reason is required to bypass posting locks. Context=${context}`);
+      throw new ForbiddenException(
+        `Override reason is required to bypass posting locks. Context=${context}`,
+      );
     }
 
     // Allowed due to override, caller must audit it (we keep service pure: it only enforces)

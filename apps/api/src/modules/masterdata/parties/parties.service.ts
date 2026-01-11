@@ -32,7 +32,8 @@ export class PartiesService {
   }
 
   async create(actorId: string, data: any) {
-    if (data.defaultCurrencyCode) data.defaultCurrencyCode = await this.normalizeCurrency(data.defaultCurrencyCode);
+    if (data.defaultCurrencyCode)
+      data.defaultCurrencyCode = await this.normalizeCurrency(data.defaultCurrencyCode);
     if (data.defaultVatCode) await this.validateVat(data.defaultVatCode);
 
     const created = await this.prisma.party.create({
@@ -58,7 +59,8 @@ export class PartiesService {
     const before = await this.prisma.party.findUnique({ where: { id } });
     if (!before) throw new NotFoundException('Party not found');
 
-    if (data.defaultCurrencyCode) data.defaultCurrencyCode = await this.normalizeCurrency(data.defaultCurrencyCode);
+    if (data.defaultCurrencyCode)
+      data.defaultCurrencyCode = await this.normalizeCurrency(data.defaultCurrencyCode);
     if (data.defaultVatCode) await this.validateVat(data.defaultVatCode);
 
     const after = await this.prisma.party.update({

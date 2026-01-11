@@ -45,7 +45,10 @@ export class AdminUsersService {
     return user;
   }
 
-  async create(actorId: string, data: { email: string; fullName: string; password: string; preferredLocale?: string }) {
+  async create(
+    actorId: string,
+    data: { email: string; fullName: string; password: string; preferredLocale?: string },
+  ) {
     const email = data.email.toLowerCase();
 
     const exists = await this.prisma.user.findUnique({ where: { email } });
@@ -61,7 +64,14 @@ export class AdminUsersService {
         preferredLocale: data.preferredLocale ?? 'en',
         status: UserStatus.ACTIVE,
       },
-      select: { id: true, email: true, fullName: true, status: true, preferredLocale: true, createdAt: true },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        status: true,
+        preferredLocale: true,
+        createdAt: true,
+      },
     });
 
     await this.audit.log({
@@ -76,7 +86,11 @@ export class AdminUsersService {
     return created;
   }
 
-  async update(actorId: string, id: string, data: { email?: string; fullName?: string; password?: string; preferredLocale?: string }) {
+  async update(
+    actorId: string,
+    id: string,
+    data: { email?: string; fullName?: string; password?: string; preferredLocale?: string },
+  ) {
     const before = await this.prisma.user.findUnique({ where: { id } });
     if (!before) throw new NotFoundException('User not found');
 
@@ -93,7 +107,14 @@ export class AdminUsersService {
     const after = await this.prisma.user.update({
       where: { id },
       data: patch,
-      select: { id: true, email: true, fullName: true, status: true, preferredLocale: true, updatedAt: true },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        status: true,
+        preferredLocale: true,
+        updatedAt: true,
+      },
     });
 
     await this.audit.log({
@@ -101,7 +122,13 @@ export class AdminUsersService {
       action: AuditAction.UPDATE,
       entity: 'User',
       entityId: id,
-      before: { id: before.id, email: before.email, fullName: before.fullName, status: before.status, preferredLocale: before.preferredLocale },
+      before: {
+        id: before.id,
+        email: before.email,
+        fullName: before.fullName,
+        status: before.status,
+        preferredLocale: before.preferredLocale,
+      },
       after,
       message: `Updated user ${after.email}`,
     });
@@ -141,7 +168,8 @@ export class AdminUsersService {
 
     // Validate roles exist
     const roles = await this.prisma.role.findMany({ where: { id: { in: roleIds } } });
-    if (roles.length !== roleIds.length) throw new BadRequestException('One or more roleIds invalid');
+    if (roles.length !== roleIds.length)
+      throw new BadRequestException('One or more roleIds invalid');
 
     const beforeRoleIds = user.roles.map((r) => r.roleId).sort();
 

@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   AuditAction,
   PartyType,
@@ -43,7 +48,9 @@ export class PaymentsService {
       const hasCustomer = !!a.customerInvoiceId;
       const hasSupplier = !!a.supplierInvoiceId;
       if (hasCustomer === hasSupplier) {
-        throw new BadRequestException('Each allocation must have exactly one of customerInvoiceId or supplierInvoiceId');
+        throw new BadRequestException(
+          'Each allocation must have exactly one of customerInvoiceId or supplierInvoiceId',
+        );
       }
       if (Number(a.amount) <= 0) throw new BadRequestException('Allocation amount must be > 0');
 
@@ -99,7 +106,9 @@ export class PaymentsService {
       throw new BadRequestException('OUT payment requires SUPPLIER party');
     }
 
-    const cur = await this.prisma.currency.findUnique({ where: { code: dto.currencyCode.toUpperCase() } });
+    const cur = await this.prisma.currency.findUnique({
+      where: { code: dto.currencyCode.toUpperCase() },
+    });
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     this.validateAllocations(dto.direction, dto.allocations);
@@ -108,7 +117,9 @@ export class PaymentsService {
     if (dto.allocations?.length) {
       const sumAlloc = dto.allocations.reduce((s: number, a: any) => s + Number(a.amount), 0);
       if (Math.abs(sumAlloc - amount) > 0.005) {
-        throw new BadRequestException(`Allocations must sum to payment amount. alloc=${sumAlloc}, amount=${amount}`);
+        throw new BadRequestException(
+          `Allocations must sum to payment amount. alloc=${sumAlloc}, amount=${amount}`,
+        );
       }
     }
 
@@ -120,29 +131,39 @@ export class PaymentsService {
         if (a.customerInvoiceId) {
           const { inv, open } = await this.getOpenAmountCustomerInvoice(a.customerInvoiceId);
 
-          if (inv.customerId !== dto.partyId) throw new BadRequestException('Customer invoice does not belong to this party');
+          if (inv.customerId !== dto.partyId)
+            throw new BadRequestException('Customer invoice does not belong to this party');
 
           if (inv.status !== 'POSTED' && !allowDraftAlloc) {
-            throw new ForbiddenException('Allocations to DRAFT customer invoices require admin override permission');
+            throw new ForbiddenException(
+              'Allocations to DRAFT customer invoices require admin override permission',
+            );
           }
 
           // Only enforce open-amount rule for POSTED invoices (draft can change)
           if (inv.status === 'POSTED' && Number(a.amount) > open + 0.005) {
-            throw new BadRequestException(`Allocation exceeds open amount for invoice ${inv.documentNo}`);
+            throw new BadRequestException(
+              `Allocation exceeds open amount for invoice ${inv.documentNo}`,
+            );
           }
         }
 
         if (a.supplierInvoiceId) {
           const { inv, open } = await this.getOpenAmountSupplierInvoice(a.supplierInvoiceId);
 
-          if (inv.supplierId !== dto.partyId) throw new BadRequestException('Supplier invoice does not belong to this party');
+          if (inv.supplierId !== dto.partyId)
+            throw new BadRequestException('Supplier invoice does not belong to this party');
 
           if (inv.status !== 'POSTED' && !allowDraftAlloc) {
-            throw new ForbiddenException('Allocations to DRAFT supplier invoices require admin override permission');
+            throw new ForbiddenException(
+              'Allocations to DRAFT supplier invoices require admin override permission',
+            );
           }
 
           if (inv.status === 'POSTED' && Number(a.amount) > open + 0.005) {
-            throw new BadRequestException(`Allocation exceeds open amount for invoice ${inv.documentNo}`);
+            throw new BadRequestException(
+              `Allocation exceeds open amount for invoice ${inv.documentNo}`,
+            );
           }
         }
       }
@@ -195,13 +216,14 @@ export class PaymentsService {
       include: { party: true, allocations: true },
     });
     if (!pay) throw new NotFoundException('Payment not found');
-    if (pay.status !== PaymentStatus.DRAFT) throw new BadRequestException('Only DRAFT payments can be posted');
+    if (pay.status !== PaymentStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT payments can be posted');
 
     await this.postingLock.assertPostingAllowed(
       actor,
       pay.documentDate,
       `Payments.post paymentId=${pay.id}`,
-      overrideReason
+      overrideReason,
     );
 
     // Allocations must sum to amount (if allocations exist)
@@ -218,19 +240,27 @@ export class PaymentsService {
 
       for (const a of pay.allocations) {
         if (a.customerInvoiceId) {
-          const inv = await this.prisma.customerInvoice.findUnique({ where: { id: a.customerInvoiceId } });
+          const inv = await this.prisma.customerInvoice.findUnique({
+            where: { id: a.customerInvoiceId },
+          });
           if (!inv) throw new BadRequestException('Invalid customerInvoiceId in allocations');
 
           if (inv.status !== 'POSTED' && !allowDraftOnPost) {
-            throw new ForbiddenException('Posting payment with allocations to DRAFT customer invoices requires admin override');
+            throw new ForbiddenException(
+              'Posting payment with allocations to DRAFT customer invoices requires admin override',
+            );
           }
         }
         if (a.supplierInvoiceId) {
-          const inv = await this.prisma.supplierInvoice.findUnique({ where: { id: a.supplierInvoiceId } });
+          const inv = await this.prisma.supplierInvoice.findUnique({
+            where: { id: a.supplierInvoiceId },
+          });
           if (!inv) throw new BadRequestException('Invalid supplierInvoiceId in allocations');
 
           if (inv.status !== 'POSTED' && !allowDraftOnPost) {
-            throw new ForbiddenException('Posting payment with allocations to DRAFT supplier invoices requires admin override');
+            throw new ForbiddenException(
+              'Posting payment with allocations to DRAFT supplier invoices requires admin override',
+            );
           }
         }
       }
@@ -296,13 +326,15 @@ export class PaymentsService {
     // Balanced check
     const debit = journalLines.reduce((s, l) => s + Number(l.debit), 0);
     const credit = journalLines.reduce((s, l) => s + Number(l.credit), 0);
-    if (Math.abs(debit - credit) > 0.005) throw new BadRequestException('Payment journal not balanced');
+    if (Math.abs(debit - credit) > 0.005)
+      throw new BadRequestException('Payment journal not balanced');
 
     // Transaction: mark payment posted then create JE via AccountingService (which uses DocumentSequence)
     const payPosted = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.payment.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('Payment not found');
-      if (locked.status !== PaymentStatus.DRAFT) throw new BadRequestException('Already posted/canceled');
+      if (locked.status !== PaymentStatus.DRAFT)
+        throw new BadRequestException('Already posted/canceled');
 
       return tx.payment.update({
         where: { id },
@@ -350,7 +382,8 @@ export class PaymentsService {
       include: { allocations: true, party: true },
     });
     if (!original) throw new NotFoundException('Payment not found');
-    if (original.status !== 'POSTED') throw new BadRequestException('Only POSTED payments can be voided');
+    if (original.status !== 'POSTED')
+      throw new BadRequestException('Only POSTED payments can be voided');
 
     const existingVoid = await this.prisma.payment.findFirst({ where: { voidOfId: original.id } });
     if (existingVoid) throw new BadRequestException('Payment already voided');
@@ -491,6 +524,11 @@ export class PaymentsService {
       message: `Voided payment ${original.documentNo} with ${created.documentNo}. Reason: ${dto.reason}`,
     });
 
-    return { ok: true, voidPaymentId: created.id, voidDocumentNo: created.documentNo, journalEntryId: je.id };
+    return {
+      ok: true,
+      voidPaymentId: created.id,
+      voidDocumentNo: created.documentNo,
+      journalEntryId: je.id,
+    };
   }
 }

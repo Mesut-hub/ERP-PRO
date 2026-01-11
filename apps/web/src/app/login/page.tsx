@@ -64,7 +64,11 @@ export default function LoginPage() {
       <h1>ERP Login</h1>
 
       <label>Email</label>
-      <input style={{ width: '100%', padding: 8 }} value={email} onChange={(e) => setEmail(e.target.value)} />
+      <input
+        style={{ width: '100%', padding: 8 }}
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
 
       <label style={{ marginTop: 12, display: 'block' }}>Password</label>
       <input
@@ -84,7 +88,9 @@ export default function LoginPage() {
       {error && <p style={{ color: 'crimson' }}>{error}</p>}
 
       <h2>Access token</h2>
-      <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{accessToken ?? '(none)'}</pre>
+      <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {accessToken ?? '(none)'}
+      </pre>
 
       <h2>/me result</h2>
       <pre>{JSON.stringify(me, null, 2)}</pre>

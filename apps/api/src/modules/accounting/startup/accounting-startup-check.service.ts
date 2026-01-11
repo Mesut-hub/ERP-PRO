@@ -6,7 +6,17 @@ export class AccountingStartupCheckService implements OnModuleInit {
   private readonly logger = new Logger(AccountingStartupCheckService.name);
 
   // Keep this list minimal but strict. Expand as you add new integrations.
-  private readonly requiredAccountCodes = ['150', '191', '320', '327', '328', '391', '600', '621', '770'];
+  private readonly requiredAccountCodes = [
+    '150',
+    '191',
+    '320',
+    '327',
+    '328',
+    '391',
+    '600',
+    '621',
+    '770',
+  ];
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -18,7 +28,9 @@ export class AccountingStartupCheckService implements OnModuleInit {
 
     const found = new Map(rows.map((r) => [r.code, r]));
     const missing = this.requiredAccountCodes.filter((c) => !found.has(c));
-    const inactive = this.requiredAccountCodes.filter((c) => found.get(c) && !found.get(c)!.isActive);
+    const inactive = this.requiredAccountCodes.filter(
+      (c) => found.get(c) && !found.get(c)!.isActive,
+    );
 
     if (missing.length || inactive.length) {
       const msg =
@@ -31,6 +43,8 @@ export class AccountingStartupCheckService implements OnModuleInit {
       throw new Error(msg);
     }
 
-    this.logger.log(`Accounting startup check OK. Required accounts present: ${this.requiredAccountCodes.join(', ')}`);
+    this.logger.log(
+      `Accounting startup check OK. Required accounts present: ${this.requiredAccountCodes.join(', ')}`,
+    );
   }
 }

@@ -27,7 +27,11 @@ export class ProductCategoriesController {
 
   @Patch(':id')
   @RequirePermissions('md.product.manage')
-  update(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: UpdateCategoryDto) {
+  update(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateCategoryDto,
+  ) {
     return this.service.update(actor.sub, id, dto);
   }
 }

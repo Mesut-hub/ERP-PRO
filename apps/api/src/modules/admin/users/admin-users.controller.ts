@@ -32,7 +32,11 @@ export class AdminUsersController {
   }
 
   @Patch(':id')
-  update(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: UpdateUserDto) {
+  update(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+  ) {
     return this.service.update(actor.sub, id, dto);
   }
 

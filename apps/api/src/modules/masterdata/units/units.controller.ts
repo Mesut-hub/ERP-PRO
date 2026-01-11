@@ -27,7 +27,11 @@ export class UnitsController {
 
   @Patch(':id')
   @RequirePermissions('md.unit.manage')
-  update(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: UpdateUnitDto) {
+  update(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateUnitDto,
+  ) {
     return this.service.update(actor.sub, id, dto);
   }
 }

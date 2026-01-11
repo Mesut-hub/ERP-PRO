@@ -93,7 +93,11 @@ export class AuthService {
       userAgent: params.userAgent ?? null,
     });
 
-    return { accessToken, refreshToken, user: { id: user.id, email: user.email, fullName: user.fullName, permissions } };
+    return {
+      accessToken,
+      refreshToken,
+      user: { id: user.id, email: user.email, fullName: user.fullName, permissions },
+    };
   }
 
   async refresh(params: { refreshToken: string; ip?: string | null; userAgent?: string | null }) {
@@ -113,7 +117,8 @@ export class AuthService {
     });
 
     if (!session || session.revokedAt) throw new UnauthorizedException('Invalid refresh token');
-    if (session.expiresAt.getTime() < Date.now()) throw new UnauthorizedException('Refresh token expired');
+    if (session.expiresAt.getTime() < Date.now())
+      throw new UnauthorizedException('Refresh token expired');
     if (session.user.status !== 'ACTIVE') throw new UnauthorizedException('User disabled');
 
     const permissions: string[] = Array.from(

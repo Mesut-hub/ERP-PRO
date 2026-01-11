@@ -120,7 +120,7 @@ async function main() {
     },
   });
 
-    // --- Master Data seeds ---
+  // --- Master Data seeds ---
   await prisma.currency.upsert({
     where: { code: 'TRY' },
     update: { isBase: true, isActive: true, name: 'Turkish Lira', symbol: '₺' },
@@ -160,7 +160,7 @@ async function main() {
     create: { code: 'PCS', name: 'Pieces', isActive: true },
   });
 
-    // --- Inventory seeds ---
+  // --- Inventory seeds ---
   const mainWh = await prisma.warehouse.upsert({
     where: { code: 'MAIN' },
     update: { name: 'Main Warehouse', isActive: true },
@@ -173,7 +173,7 @@ async function main() {
     create: { warehouseId: mainWh.id, code: 'DEFAULT', name: 'Default Location', isActive: true },
   });
 
-    // --- Accounting seeds (minimal starter CoA) ---
+  // --- Accounting seeds (minimal starter CoA) ---
   const accounts = [
     { code: '100', name: 'Cash', type: 'ASSET' as const },
     { code: '102', name: 'Bank', type: 'ASSET' as const },

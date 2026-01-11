@@ -1,4 +1,12 @@
-import { IsArray, IsEnum, IsOptional, IsString, MinLength, ValidateNested, IsNumberString } from 'class-validator';
+import {
+  IsArray,
+  IsEnum,
+  IsOptional,
+  IsString,
+  MinLength,
+  ValidateNested,
+  IsNumberString,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { InvoiceKind } from '@prisma/client';
 

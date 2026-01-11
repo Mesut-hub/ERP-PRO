@@ -102,7 +102,10 @@ describe('Purchasing: return concurrency guard (e2e)', () => {
       .expect(201);
 
     const receiptId = grnRes.body.receiptId;
-    const receiptRes = await request(httpServer).get(`/pur/receipts/${receiptId}`).set(h).expect(200);
+    const receiptRes = await request(httpServer)
+      .get(`/pur/receipts/${receiptId}`)
+      .set(h)
+      .expect(200);
     const receiptLineId = receiptRes.body.lines[0].id;
 
     // Concurrency: two returns of qty 2 each -> total 4 > received 2
@@ -129,7 +132,9 @@ describe('Purchasing: return concurrency guard (e2e)', () => {
 
     const results = await Promise.allSettled([req1, req2]);
 
-    const fulfilled = results.filter((r) => r.status === 'fulfilled') as PromiseFulfilledResult<any>[];
+    const fulfilled = results.filter(
+      (r) => r.status === 'fulfilled',
+    ) as PromiseFulfilledResult<any>[];
     const rejected = results.filter((r) => r.status === 'rejected');
 
     // If supertest rejects, it's an infra error. We mostly expect both fulfilled with different HTTP statuses.

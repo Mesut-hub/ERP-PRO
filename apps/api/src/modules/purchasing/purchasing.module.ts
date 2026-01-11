@@ -10,6 +10,6 @@ import { SequenceModule } from '../common/sequence/sequence.module';
   imports: [InventoryModule, AccountingModule, FinanceModule, SequenceModule],
   providers: [PurchasingService],
   controllers: [PurchasingController],
-  exports: [PurchasingService]
+  exports: [PurchasingService],
 })
 export class PurchasingModule {}

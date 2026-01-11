@@ -27,7 +27,8 @@ export class FifoService {
     },
   ) {
     if (args.qtyIn <= 0) throw new BadRequestException('qtyIn must be > 0');
-    if (!Number.isFinite(args.unitCostBase) || args.unitCostBase <= 0) throw new BadRequestException('unitCostBase must be > 0');
+    if (!Number.isFinite(args.unitCostBase) || args.unitCostBase <= 0)
+      throw new BadRequestException('unitCostBase must be > 0');
 
     return (tx as any).inventoryFifoLayer.create({
       data: {

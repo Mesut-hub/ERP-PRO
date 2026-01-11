@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   AuditAction,
   InvoiceKind,
@@ -114,7 +119,10 @@ export class PurchasingService {
       action: AuditAction.POST,
       entity: 'SupplierInvoice',
       entityId: params.scnId,
-      after: { purchaseReturnClearingJournalEntryId: jeClear.id, purchaseReturnClearingAmountBase: amt.toFixed(2) },
+      after: {
+        purchaseReturnClearingJournalEntryId: jeClear.id,
+        purchaseReturnClearingAmountBase: amt.toFixed(2),
+      },
       message: `Created SCN clearing JE ${jeClear.documentNo} for ${params.scnDocumentNo}`,
     });
   }
@@ -137,12 +145,15 @@ export class PurchasingService {
     if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('PO must have lines');
 
     const supplier = await this.prisma.party.findUnique({ where: { id: dto.supplierId } });
-    if (!supplier || supplier.type !== PartyType.SUPPLIER) throw new BadRequestException('supplierId must be a SUPPLIER');
+    if (!supplier || supplier.type !== PartyType.SUPPLIER)
+      throw new BadRequestException('supplierId must be a SUPPLIER');
 
     const wh = await this.prisma.warehouse.findUnique({ where: { id: dto.warehouseId } });
     if (!wh || !wh.isActive) throw new BadRequestException('Invalid warehouseId');
 
-    const cur = await this.prisma.currency.findUnique({ where: { code: dto.currencyCode.toUpperCase() } });
+    const cur = await this.prisma.currency.findUnique({
+      where: { code: dto.currencyCode.toUpperCase() },
+    });
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
@@ -200,7 +211,8 @@ export class PurchasingService {
   async approvePO(actorId: string, id: string) {
     const po = await this.prisma.purchaseOrder.findUnique({ where: { id } });
     if (!po) throw new NotFoundException('PO not found');
-    if (po.status !== PurchaseOrderStatus.DRAFT) throw new BadRequestException('Only DRAFT POs can be approved');
+    if (po.status !== PurchaseOrderStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT POs can be approved');
 
     const updated = await this.prisma.purchaseOrder.update({
       where: { id },
@@ -235,7 +247,8 @@ export class PurchasingService {
       throw new ForbiddenException('PO must be approved before receiving');
     }
 
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Receipt must have lines');
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('Receipt must have lines');
 
     // Validate each receipt line references a PO line and does not exceed ordered qty minus already received.
     // IMPORTANT: must aggregate by poLineId (professional), not by productId.
@@ -325,7 +338,11 @@ export class PurchasingService {
     });
 
     // --- FIFO valuation: create inbound layers (base TRY) ---
-    const rateToTry = await this.getRateToTryAtPosting(po.currencyCode, po.exchangeRateToBase, receipt.documentDate);
+    const rateToTry = await this.getRateToTryAtPosting(
+      po.currencyCode,
+      po.exchangeRateToBase,
+      receipt.documentDate,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       for (const l of receipt.lines) {
@@ -438,15 +455,16 @@ export class PurchasingService {
       const oldAvg = existing ? Number(existing.avgUnitCost) : 0;
 
       const denom = onHandBefore + qty;
-      const newAvg =
-        denom <= 0
-          ? unitCost
-          : ((onHandBefore * oldAvg) + (qty * unitCost)) / denom;
+      const newAvg = denom <= 0 ? unitCost : (onHandBefore * oldAvg + qty * unitCost) / denom;
 
       await this.prisma.inventoryCost.upsert({
         where: { productId_warehouseId: { productId: l.productId, warehouseId: po.warehouseId } },
         update: { avgUnitCost: newAvg.toFixed(6) },
-        create: { productId: l.productId, warehouseId: po.warehouseId, avgUnitCost: newAvg.toFixed(6) },
+        create: {
+          productId: l.productId,
+          warehouseId: po.warehouseId,
+          avgUnitCost: newAvg.toFixed(6),
+        },
       });
     }
 
@@ -478,8 +496,14 @@ export class PurchasingService {
     return { receiptId: receipt.id, stockMoveId: move.id };
   }
 
-  async createPurchaseReturn(actor: JwtAccessPayload, receiptId: string, dto: CreatePurchaseReturnDto, overrideReason?: string) {
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Return must have lines');
+  async createPurchaseReturn(
+    actor: JwtAccessPayload,
+    receiptId: string,
+    dto: CreatePurchaseReturnDto,
+    overrideReason?: string,
+  ) {
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('Return must have lines');
 
     const docDate = new Date(dto.documentDate);
     if (Number.isNaN(docDate.getTime())) throw new BadRequestException('Invalid documentDate');
@@ -492,116 +516,136 @@ export class PurchasingService {
     );
 
     // 1) Atomic section: lock + re-check returned qty + create return
-    const { receipt, postedInv, scn, createdReturn } = await this.prisma.$transaction(async (tx) => {
-      // Lock this receipt for return processing (prevents concurrent over-returns)
-      await this.lockPurchaseReceiptForReturn(tx as any, receiptId);
+    const { receipt, postedInv, scn, createdReturn } = await this.prisma.$transaction(
+      async (tx) => {
+        // Lock this receipt for return processing (prevents concurrent over-returns)
+        await this.lockPurchaseReceiptForReturn(tx as any, receiptId);
 
-      const receipt = await (tx as any).purchaseReceipt.findUnique({
-        where: { id: receiptId },
-        include: { po: true, warehouse: true, lines: true },
-      });
-      if (!receipt) throw new NotFoundException('PurchaseReceipt not found');
-
-      let postedInv: { id: string; documentNo: string } | null = null;
-
-      if (receipt.poId) {
-        postedInv = await (tx as any).supplierInvoice.findFirst({
-          where: { poId: receipt.poId, status: SupplierInvoiceStatus.POSTED, kind: InvoiceKind.INVOICE },
-          select: { id: true, documentNo: true },
-          orderBy: { documentDate: 'desc' },
+        const receipt = await (tx as any).purchaseReceipt.findUnique({
+          where: { id: receiptId },
+          include: { po: true, warehouse: true, lines: true },
         });
-      }
+        if (!receipt) throw new NotFoundException('PurchaseReceipt not found');
 
-      let scn:
-        | {
-            id: string;
-            documentNo: string;
-            noteOfId: string;
-            poId: string | null;
-            kind: InvoiceKind;
-            status: SupplierInvoiceStatus;
+        let postedInv: { id: string; documentNo: string } | null = null;
+
+        if (receipt.poId) {
+          postedInv = await (tx as any).supplierInvoice.findFirst({
+            where: {
+              poId: receipt.poId,
+              status: SupplierInvoiceStatus.POSTED,
+              kind: InvoiceKind.INVOICE,
+            },
+            select: { id: true, documentNo: true },
+            orderBy: { documentDate: 'desc' },
+          });
+        }
+
+        let scn: {
+          id: string;
+          documentNo: string;
+          noteOfId: string;
+          poId: string | null;
+          kind: InvoiceKind;
+          status: SupplierInvoiceStatus;
+        } | null = null;
+
+        if (postedInv) {
+          if (!dto.supplierCreditNoteId) {
+            throw new BadRequestException(
+              `Supplier invoice ${postedInv.documentNo} is POSTED. Provide supplierCreditNoteId (POSTED CREDIT_NOTE) to allow return-after-invoice.`,
+            );
           }
-        | null = null;
 
-      if (postedInv) {
-        if (!dto.supplierCreditNoteId) {
-          throw new BadRequestException(
-            `Supplier invoice ${postedInv.documentNo} is POSTED. Provide supplierCreditNoteId (POSTED CREDIT_NOTE) to allow return-after-invoice.`,
-          );
+          scn = (await (tx as any).supplierInvoice.findUnique({
+            where: { id: dto.supplierCreditNoteId },
+            select: {
+              id: true,
+              documentNo: true,
+              noteOfId: true,
+              status: true,
+              kind: true,
+              poId: true,
+            },
+          })) as any;
+
+          if (!scn) throw new BadRequestException('Invalid supplierCreditNoteId');
+          if (scn.poId !== receipt.poId)
+            throw new BadRequestException('Credit note does not belong to same PO');
+          if (scn.kind !== InvoiceKind.CREDIT_NOTE)
+            throw new BadRequestException('supplierCreditNoteId must be CREDIT_NOTE');
+          if (scn.status !== SupplierInvoiceStatus.POSTED)
+            throw new BadRequestException('Credit note must be POSTED');
+          if (scn.noteOfId !== postedInv.id) {
+            throw new BadRequestException(
+              `Credit note must be issued as a note of invoice ${postedInv.documentNo}`,
+            );
+          }
         }
 
-        scn = (await (tx as any).supplierInvoice.findUnique({
-          where: { id: dto.supplierCreditNoteId },
-          select: { id: true, documentNo: true, noteOfId: true, status: true, kind: true, poId: true },
-        })) as any;
+        // Validate receiptLineId and quantities (done under lock, so it's race-safe)
+        const receiptLines = receipt.lines as any[];
+        const receiptLineById = new Map<string, any>(receiptLines.map((l) => [l.id as string, l]));
 
-        if (!scn) throw new BadRequestException('Invalid supplierCreditNoteId');
-        if (scn.poId !== receipt.poId) throw new BadRequestException('Credit note does not belong to same PO');
-        if (scn.kind !== InvoiceKind.CREDIT_NOTE) throw new BadRequestException('supplierCreditNoteId must be CREDIT_NOTE');
-        if (scn.status !== SupplierInvoiceStatus.POSTED) throw new BadRequestException('Credit note must be POSTED');
-        if (scn.noteOfId !== postedInv.id) {
-          throw new BadRequestException(`Credit note must be issued as a note of invoice ${postedInv.documentNo}`);
+        const returnedAgg = await (tx as any).purchaseReturnLine.groupBy({
+          by: ['receiptLineId'],
+          where: { purchaseReturn: { receiptId } },
+          _sum: { quantity: true },
+        });
+
+        const returnedByLine = new Map<string, number>();
+        for (const r of returnedAgg)
+          returnedByLine.set(r.receiptLineId, Number(r._sum.quantity ?? 0));
+
+        for (const rl of dto.lines) {
+          const base = receiptLineById.get(rl.receiptLineId);
+          if (!base) throw new BadRequestException('Invalid receiptLineId');
+
+          const qty = Number(rl.quantity);
+          if (!Number.isFinite(qty) || qty <= 0)
+            throw new BadRequestException('Return quantity must be > 0');
+
+          const alreadyReturned = returnedByLine.get(base.id) ?? 0;
+          if (alreadyReturned + qty > Number(base.quantity) + 1e-9) {
+            throw new BadRequestException(
+              `Return exceeds received qty for receiptLineId=${base.id}`,
+            );
+          }
         }
-      }
 
-      // Validate receiptLineId and quantities (done under lock, so it's race-safe)
-      const receiptLines = receipt.lines as any[];
-      const receiptLineById = new Map<string, any>(receiptLines.map((l) => [l.id as string, l]));
+        const prNo = await this.docNo.allocate('PRTN', docDate);
 
-      const returnedAgg = await (tx as any).purchaseReturnLine.groupBy({
-        by: ['receiptLineId'],
-        where: { purchaseReturn: { receiptId } },
-        _sum: { quantity: true },
-      });
-
-      const returnedByLine = new Map<string, number>();
-      for (const r of returnedAgg) returnedByLine.set(r.receiptLineId, Number(r._sum.quantity ?? 0));
-
-      for (const rl of dto.lines) {
-        const base = receiptLineById.get(rl.receiptLineId);
-        if (!base) throw new BadRequestException('Invalid receiptLineId');
-
-        const qty = Number(rl.quantity);
-        if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Return quantity must be > 0');
-
-        const alreadyReturned = returnedByLine.get(base.id) ?? 0;
-        if (alreadyReturned + qty > Number(base.quantity) + 1e-9) {
-          throw new BadRequestException(`Return exceeds received qty for receiptLineId=${base.id}`);
-        }
-      }
-
-      const prNo = await this.docNo.allocate('PRTN', docDate);
-
-      const createdReturn = await (tx as any).purchaseReturn.create({
-        data: {
-          documentNo: prNo,
-          documentDate: docDate,
-          receiptId: receipt.id,
-          warehouseId: receipt.warehouseId,
-          supplierCreditNoteId: dto.supplierCreditNoteId ?? null,
-          reason: dto.reason,
-          notes: dto.notes,
-          createdById: actor.sub,
-          lines: {
-            create: dto.lines.map((rl) => {
-              const base = receiptLineById.get(rl.receiptLineId)!;
-              return {
-                receiptLineId: base.id,
-                productId: base.productId,
-                unitId: base.unitId,
-                quantity: rl.quantity,
-                unitCostBase: '0.000000',
-                lineCostBase: '0.00',
-                notes: rl.notes,
-              };
-            }),
+        const createdReturn = await (tx as any).purchaseReturn.create({
+          data: {
+            documentNo: prNo,
+            documentDate: docDate,
+            receiptId: receipt.id,
+            warehouseId: receipt.warehouseId,
+            supplierCreditNoteId: dto.supplierCreditNoteId ?? null,
+            reason: dto.reason,
+            notes: dto.notes,
+            createdById: actor.sub,
+            lines: {
+              create: dto.lines.map((rl) => {
+                const base = receiptLineById.get(rl.receiptLineId)!;
+                return {
+                  receiptLineId: base.id,
+                  productId: base.productId,
+                  unitId: base.unitId,
+                  quantity: rl.quantity,
+                  unitCostBase: '0.000000',
+                  lineCostBase: '0.00',
+                  notes: rl.notes,
+                };
+              }),
+            },
           },
-        },
-        include: { lines: true },
-      });
+          include: { lines: true },
+        });
 
-      return { receipt, postedInv, scn, createdReturn };
-    });
+        return { receipt, postedInv, scn, createdReturn };
+      },
+    );
 
     // 2) From here onward: your existing logic stays almost the same
     // Create & post StockMove ISSUE (no lock needed)
@@ -671,7 +715,9 @@ export class PurchasingService {
     // Accounting block stays the same, but uses postedInv/scn from transaction
     if (totalCost > 0) {
       const accInv = await this.getAccountByCode('150');
-      const accDebit = postedInv ? await this.getAccountByCode('328') : await this.getAccountByCode('327');
+      const accDebit = postedInv
+        ? await this.getAccountByCode('328')
+        : await this.getAccountByCode('327');
 
       await this.accounting.createPostedFromIntegration(actor.sub, {
         documentDate: docDate,
@@ -720,11 +766,19 @@ export class PurchasingService {
       action: AuditAction.POST,
       entity: 'PurchaseReturn',
       entityId: createdReturn.id,
-      after: { documentNo: createdReturn.documentNo, stockMoveId: move.id, totalCost: totalCost.toFixed(2) },
+      after: {
+        documentNo: createdReturn.documentNo,
+        stockMoveId: move.id,
+        totalCost: totalCost.toFixed(2),
+      },
       message: `Created purchase return ${createdReturn.documentNo} for receipt ${receipt.documentNo}`,
     });
 
-    return { purchaseReturnId: createdReturn.id, stockMoveId: move.id, totalCost: totalCost.toFixed(2) };
+    return {
+      purchaseReturnId: createdReturn.id,
+      stockMoveId: move.id,
+      totalCost: totalCost.toFixed(2),
+    };
   }
 
   async getReceipt(id: string) {
@@ -751,14 +805,19 @@ export class PurchasingService {
     return Number(v.percent);
   }
 
-  private async getRateToTryAtPosting(poCurrency: string, poExchangeRateToBase: any, postingDate: Date): Promise<number> {
+  private async getRateToTryAtPosting(
+    poCurrency: string,
+    poExchangeRateToBase: any,
+    postingDate: Date,
+  ): Promise<number> {
     const cur = poCurrency.toUpperCase();
     if (cur === 'TRY') return 1;
 
     // If PO has an explicit exchangeRateToBase, treat it as locked override (auditable)
     if (poExchangeRateToBase !== null && poExchangeRateToBase !== undefined) {
       const r = Number(poExchangeRateToBase);
-      if (!Number.isFinite(r) || r <= 0) throw new BadRequestException('Invalid exchangeRateToBase on PO');
+      if (!Number.isFinite(r) || r <= 0)
+        throw new BadRequestException('Invalid exchangeRateToBase on PO');
       return r;
     }
 
@@ -767,16 +826,23 @@ export class PurchasingService {
   }
 
   async createSupplierInvoice(actorId: string, dto: any) {
-    if (!dto.lines || dto.lines.length === 0) throw new BadRequestException('Invoice must have lines');
+    if (!dto.lines || dto.lines.length === 0)
+      throw new BadRequestException('Invoice must have lines');
 
     const supplier = await this.prisma.party.findUnique({ where: { id: dto.supplierId } });
-    if (!supplier || supplier.type !== PartyType.SUPPLIER) throw new BadRequestException('supplierId must be SUPPLIER');
+    if (!supplier || supplier.type !== PartyType.SUPPLIER)
+      throw new BadRequestException('supplierId must be SUPPLIER');
 
-    const cur = await this.prisma.currency.findUnique({ where: { code: dto.currencyCode.toUpperCase() } });
+    const cur = await this.prisma.currency.findUnique({
+      where: { code: dto.currencyCode.toUpperCase() },
+    });
     if (!cur || !cur.isActive) throw new BadRequestException('Invalid currencyCode');
 
     if (dto.poId) {
-      const po = await this.prisma.purchaseOrder.findUnique({ where: { id: dto.poId }, include: { lines: true } });
+      const po = await this.prisma.purchaseOrder.findUnique({
+        where: { id: dto.poId },
+        include: { lines: true },
+      });
       if (!po) throw new BadRequestException('Invalid poId');
 
       const poLineIds = po.lines.map((l) => l.id);
@@ -801,10 +867,12 @@ export class PurchasingService {
         _sum: { quantity: true },
       });
       const invoicedByPoLineId = new Map<string, number>();
-      for (const r of invAgg) if (r.poLineId) invoicedByPoLineId.set(r.poLineId, Number(r._sum.quantity ?? 0));
+      for (const r of invAgg)
+        if (r.poLineId) invoicedByPoLineId.set(r.poLineId, Number(r._sum.quantity ?? 0));
 
       for (const l of dto.lines) {
-        if (!l.poLineId) throw new BadRequestException('poLineId is required when poId is provided');
+        if (!l.poLineId)
+          throw new BadRequestException('poLineId is required when poId is provided');
 
         const poLine = poLineById.get(l.poLineId);
         if (!poLine) throw new BadRequestException('Invalid poLineId for this PO');
@@ -900,7 +968,7 @@ export class PurchasingService {
 
     return created;
   }
-  
+
   async createSupplierInvoiceNote(actor: JwtAccessPayload, dto: CreateSupplierInvoiceNoteDto) {
     if (dto.kind === InvoiceKind.INVOICE) {
       throw new BadRequestException('Supplier invoice note kind must be CREDIT_NOTE or DEBIT_NOTE');
@@ -914,7 +982,8 @@ export class PurchasingService {
       include: { supplier: true, lines: true },
     });
     if (!base) throw new NotFoundException('Base supplier invoice not found');
-    if (base.status !== 'POSTED') throw new BadRequestException('You can only issue notes against POSTED supplier invoices');
+    if (base.status !== 'POSTED')
+      throw new BadRequestException('You can only issue notes against POSTED supplier invoices');
 
     // Determine if base invoice is PO-matched (GRNI model)
     const baseHasPoMatch = !!base.poId && base.lines.some((l: any) => !!l.poLineId);
@@ -928,7 +997,9 @@ export class PurchasingService {
 
       for (const nl of dto.lines) {
         if (!nl.poLineId) {
-          throw new BadRequestException('poLineId is required for note lines when base invoice is PO-matched');
+          throw new BadRequestException(
+            'poLineId is required for note lines when base invoice is PO-matched',
+          );
         }
         if (!allowedPoLineIds.has(nl.poLineId)) {
           throw new BadRequestException('Invalid poLineId for this noteOf invoice');
@@ -990,20 +1061,26 @@ export class PurchasingService {
       action: AuditAction.CREATE,
       entity: 'SupplierInvoice',
       entityId: created.id,
-      after: { kind: created.kind, documentNo: created.documentNo, noteOfId: created.noteOfId, baseHasPoMatch },
+      after: {
+        kind: created.kind,
+        documentNo: created.documentNo,
+        noteOfId: created.noteOfId,
+        baseHasPoMatch,
+      },
       message: `Created ${created.kind} ${created.documentNo} for supplier invoice ${base.documentNo}. Reason: ${dto.reason}`,
     });
 
     return created;
   }
-  
+
   async postSupplierInvoice(actor: JwtAccessPayload, id: string, overrideReason?: string) {
     const inv = await this.prisma.supplierInvoice.findUnique({
       where: { id },
       include: { lines: true, supplier: true },
     });
     if (!inv) throw new NotFoundException('SupplierInvoice not found');
-    if (inv.status !== SupplierInvoiceStatus.DRAFT) throw new BadRequestException('Only DRAFT invoices can be posted');
+    if (inv.status !== SupplierInvoiceStatus.DRAFT)
+      throw new BadRequestException('Only DRAFT invoices can be posted');
 
     await this.postingLock.assertPostingAllowed(
       actor,

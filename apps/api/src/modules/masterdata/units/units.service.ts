@@ -38,7 +38,10 @@ export class UnitsService {
     const before = await this.prisma.unit.findUnique({ where: { id } });
     if (!before) throw new NotFoundException('Unit not found');
 
-    const after = await this.prisma.unit.update({ where: { id }, data: { name: data.name ?? before.name } });
+    const after = await this.prisma.unit.update({
+      where: { id },
+      data: { name: data.name ?? before.name },
+    });
 
     await this.audit.log({
       actorId,

@@ -28,13 +28,21 @@ export class PaymentsController {
 
   @Post('payments/:id/post')
   @RequirePermissions('pay.payment.post')
-  post(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: PostingOverrideDto) {
+  post(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: PostingOverrideDto,
+  ) {
     return this.service.post(actor, id, dto.reason);
   }
 
   @Post('payments/:id/void')
   @RequirePermissions('pay.payment.post')
-  void(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string, @Body() dto: VoidPaymentDto) {
+  void(
+    @CurrentUser() actor: JwtAccessPayload,
+    @Param('id') id: string,
+    @Body() dto: VoidPaymentDto,
+  ) {
     return this.service.voidPayment(actor, id, dto);
   }
 }

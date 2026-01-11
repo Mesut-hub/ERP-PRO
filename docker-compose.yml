@@ -8,11 +8,11 @@ services:
       POSTGRES_USER: erp
       POSTGRES_PASSWORD: aM6AYeQ2xn25KhCE
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - erp_db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U erp -d erp"]
+      test: ['CMD-SHELL', 'pg_isready -U erp -d erp']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -25,7 +25,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: Welcome-123
     ports:
-      - "5050:80"
+      - '5050:80'
     depends_on:
       db:
         condition: service_healthy

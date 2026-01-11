@@ -12,7 +12,6 @@ import { Type } from 'class-transformer';
 import { VatRateCode } from '@prisma/client';
 
 class CreateSupplierInvoiceLineDto {
-
   @IsOptional()
   @IsString()
   poLineId?: string;

@@ -7,7 +7,9 @@ import { AppModule } from '../src/modules/app/app.module';
 describe('Purchasing: SCN clearing JE idempotency (e2e)', () => {
   async function getJEsBySource(httpServer: any, h: any, sourceType: string, sourceId: string) {
     const res = await request(httpServer)
-      .get(`/acc/journals/by-source?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`)
+      .get(
+        `/acc/journals/by-source?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`,
+      )
       .set(h)
       .expect(200);
     return res.body;
@@ -122,7 +124,10 @@ describe('Purchasing: SCN clearing JE idempotency (e2e)', () => {
       .expect(201);
 
     const receiptId = grnRes.body.receiptId;
-    const receiptRes = await request(httpServer).get(`/pur/receipts/${receiptId}`).set(h).expect(200);
+    const receiptRes = await request(httpServer)
+      .get(`/pur/receipts/${receiptId}`)
+      .set(h)
+      .expect(200);
     const receiptLineId = receiptRes.body.lines[0].id;
 
     // Invoice post
@@ -137,7 +142,16 @@ describe('Purchasing: SCN clearing JE idempotency (e2e)', () => {
         exchangeRateToBase: '30',
         documentDate: invDate,
         notes: 'Invoice for idempotency test',
-        lines: [{ poLineId, productId, description: 'Invoice line', quantity: '10', unitPrice: '5', vatCode: 'KDV_20' }],
+        lines: [
+          {
+            poLineId,
+            productId,
+            description: 'Invoice line',
+            quantity: '10',
+            unitPrice: '5',
+            vatCode: 'KDV_20',
+          },
+        ],
       })
       .expect(201);
     const invoiceId = invRes.body.id;
@@ -153,12 +167,25 @@ describe('Purchasing: SCN clearing JE idempotency (e2e)', () => {
         noteOfId: invoiceId,
         reason: 'Idempotency proof SCN',
         documentDate: scnDate,
-        lines: [{ poLineId, productId, description: 'SCN line', quantity: '2', unitPrice: '5', vatCode: 'KDV_20' }],
+        lines: [
+          {
+            poLineId,
+            productId,
+            description: 'SCN line',
+            quantity: '2',
+            unitPrice: '5',
+            vatCode: 'KDV_20',
+          },
+        ],
       })
       .expect(201);
 
     const creditNoteId = cnRes.body.id;
-    await request(httpServer).post(`/pur/invoices/${creditNoteId}/post`).set(h).send({}).expect(201);
+    await request(httpServer)
+      .post(`/pur/invoices/${creditNoteId}/post`)
+      .set(h)
+      .send({})
+      .expect(201);
 
     // Return #1 linked to SCN
     const ret1 = await request(httpServer)
