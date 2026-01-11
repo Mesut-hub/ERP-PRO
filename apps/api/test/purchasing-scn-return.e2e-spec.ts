@@ -253,6 +253,10 @@ describe('Purchasing: invoice -> SCN -> purchase return (e2e)', () => {
     );
     expect(scnPostingJe).toBeTruthy();
 
+    expect(
+      (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '320' && Number(ln.debit) > 0),
+    ).toBe(true);
+
     // NEW: posting JE must hit GRNI 327 (not expense 770) for PO-matched notes
     expect(
       (scnPostingJe.lines ?? []).some((ln: any) => ln.account?.code === '327'),

@@ -119,6 +119,12 @@ export class PurchasingService {
     });
   }
 
+  private async lockPurchaseReceiptForReturn(tx: any, receiptId: string) {
+    // Postgres advisory lock, held until transaction ends.
+    // This serializes concurrent returns for the same receiptId across all app instances.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${receiptId})::bigint)`;
+  }
+
   async listPOs() {
     return this.prisma.purchaseOrder.findMany({
       orderBy: { createdAt: 'desc' },
@@ -485,122 +491,126 @@ export class PurchasingService {
       overrideReason,
     );
 
-    const receipt = await this.prisma.purchaseReceipt.findUnique({
-      where: { id: receiptId },
-      include: { po: true, warehouse: true, lines: true },
-    });
-    if (!receipt) throw new NotFoundException('PurchaseReceipt not found');
+    // 1) Atomic section: lock + re-check returned qty + create return
+    const { receipt, postedInv, scn, createdReturn } = await this.prisma.$transaction(async (tx) => {
+      // Lock this receipt for return processing (prevents concurrent over-returns)
+      await this.lockPurchaseReceiptForReturn(tx as any, receiptId);
 
-    let postedInv: { id: string; documentNo: string } | null = null;
-
-    // Professional control (temporary): block if PO has POSTED invoice until SCN workflow is implemented
-    if (receipt.poId) {
-      postedInv = await this.prisma.supplierInvoice.findFirst({
-        where: { poId: receipt.poId, status: SupplierInvoiceStatus.POSTED, kind: InvoiceKind.INVOICE },
-        select: { id: true, documentNo: true },
-        orderBy: { documentDate: 'desc' },
+      const receipt = await (tx as any).purchaseReceipt.findUnique({
+        where: { id: receiptId },
+        include: { po: true, warehouse: true, lines: true },
       });
-    }
+      if (!receipt) throw new NotFoundException('PurchaseReceipt not found');
 
-    let scn: { 
-      id: string;
-      documentNo: string;
-      noteOfId: string,
-      poId: string | null;
-      kind: InvoiceKind;
-      status: SupplierInvoiceStatus; 
-    } | null = null;
+      let postedInv: { id: string; documentNo: string } | null = null;
 
-    if (postedInv) {
-      if (!dto.supplierCreditNoteId) {
-        throw new BadRequestException(
-          `Supplier invoice ${postedInv.documentNo} is POSTED. Provide supplierCreditNoteId (POSTED CREDIT_NOTE) to allow return-after-invoice.`,
-        );
+      if (receipt.poId) {
+        postedInv = await (tx as any).supplierInvoice.findFirst({
+          where: { poId: receipt.poId, status: SupplierInvoiceStatus.POSTED, kind: InvoiceKind.INVOICE },
+          select: { id: true, documentNo: true },
+          orderBy: { documentDate: 'desc' },
+        });
       }
 
-      scn = await this.prisma.supplierInvoice.findUnique({
-        where: { id: dto.supplierCreditNoteId },
-        select: { 
-          id: true,
-          documentNo: true,
-          noteOfId: true,
-          status: true,
-          kind: true,
-          poId: true 
-        },
-      }) as any;
+      let scn:
+        | {
+            id: string;
+            documentNo: string;
+            noteOfId: string;
+            poId: string | null;
+            kind: InvoiceKind;
+            status: SupplierInvoiceStatus;
+          }
+        | null = null;
 
-      if (!scn) throw new BadRequestException('Invalid supplierCreditNoteId');
-      if (scn.poId !== receipt.poId) throw new BadRequestException('Credit note does not belong to same PO');
-      if (scn.kind !== InvoiceKind.CREDIT_NOTE) throw new BadRequestException('supplierCreditNoteId must be CREDIT_NOTE');
-      if (scn.status !== SupplierInvoiceStatus.POSTED) throw new BadRequestException('Credit note must be POSTED');
-      if (scn.noteOfId !== postedInv.id) {
-        throw new BadRequestException(`Credit note must be issued as a note of invoice ${postedInv.documentNo}`);
-    }
-  }
+      if (postedInv) {
+        if (!dto.supplierCreditNoteId) {
+          throw new BadRequestException(
+            `Supplier invoice ${postedInv.documentNo} is POSTED. Provide supplierCreditNoteId (POSTED CREDIT_NOTE) to allow return-after-invoice.`,
+          );
+        }
 
-    // Validate receiptLineId and quantities
-    const receiptLineById = new Map(receipt.lines.map((l) => [l.id, l]));
+        scn = (await (tx as any).supplierInvoice.findUnique({
+          where: { id: dto.supplierCreditNoteId },
+          select: { id: true, documentNo: true, noteOfId: true, status: true, kind: true, poId: true },
+        })) as any;
 
-    const returnedAgg = await this.prisma.purchaseReturnLine.groupBy({
-      by: ['receiptLineId'],
-      where: { purchaseReturn: { receiptId } },
-      _sum: { quantity: true },
-    });
-    const returnedByLine = new Map<string, number>();
-    for (const r of returnedAgg) returnedByLine.set(r.receiptLineId, Number(r._sum.quantity ?? 0));
-
-    for (const rl of dto.lines) {
-      const base = receiptLineById.get(rl.receiptLineId);
-      if (!base) throw new BadRequestException('Invalid receiptLineId');
-
-      const qty = Number(rl.quantity);
-      if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Return quantity must be > 0');
-
-      const alreadyReturned = returnedByLine.get(base.id) ?? 0;
-      if (alreadyReturned + qty > Number(base.quantity) + 1e-9) {
-        throw new BadRequestException(`Return exceeds received qty for receiptLineId=${base.id}`);
+        if (!scn) throw new BadRequestException('Invalid supplierCreditNoteId');
+        if (scn.poId !== receipt.poId) throw new BadRequestException('Credit note does not belong to same PO');
+        if (scn.kind !== InvoiceKind.CREDIT_NOTE) throw new BadRequestException('supplierCreditNoteId must be CREDIT_NOTE');
+        if (scn.status !== SupplierInvoiceStatus.POSTED) throw new BadRequestException('Credit note must be POSTED');
+        if (scn.noteOfId !== postedInv.id) {
+          throw new BadRequestException(`Credit note must be issued as a note of invoice ${postedInv.documentNo}`);
+        }
       }
-    }
 
-    const prNo = await this.docNo.allocate('PRTN', docDate);
+      // Validate receiptLineId and quantities (done under lock, so it's race-safe)
+      const receiptLines = receipt.lines as any[];
+      const receiptLineById = new Map<string, any>(receiptLines.map((l) => [l.id as string, l]));
 
-    // Create return + lines (cost snapshot filled after FIFO allocation)
-    const createdReturn = await this.prisma.purchaseReturn.create({
-      data: {
-        documentNo: prNo,
-        documentDate: docDate,
-        receiptId: receipt.id,
-        warehouseId: receipt.warehouseId,
-        supplierCreditNoteId: dto.supplierCreditNoteId ?? null,
-        reason: dto.reason,
-        notes: dto.notes,
-        createdById: actor.sub,
-        lines: {
-          create: dto.lines.map((rl) => {
-            const base = receiptLineById.get(rl.receiptLineId)!;
-            return {
-              receiptLineId: base.id,
-              productId: base.productId,
-              unitId: base.unitId,
-              quantity: rl.quantity,
-              unitCostBase: '0.000000',
-              lineCostBase: '0.00',
-              notes: rl.notes,
-            };
-          }),
+      const returnedAgg = await (tx as any).purchaseReturnLine.groupBy({
+        by: ['receiptLineId'],
+        where: { purchaseReturn: { receiptId } },
+        _sum: { quantity: true },
+      });
+
+      const returnedByLine = new Map<string, number>();
+      for (const r of returnedAgg) returnedByLine.set(r.receiptLineId, Number(r._sum.quantity ?? 0));
+
+      for (const rl of dto.lines) {
+        const base = receiptLineById.get(rl.receiptLineId);
+        if (!base) throw new BadRequestException('Invalid receiptLineId');
+
+        const qty = Number(rl.quantity);
+        if (!Number.isFinite(qty) || qty <= 0) throw new BadRequestException('Return quantity must be > 0');
+
+        const alreadyReturned = returnedByLine.get(base.id) ?? 0;
+        if (alreadyReturned + qty > Number(base.quantity) + 1e-9) {
+          throw new BadRequestException(`Return exceeds received qty for receiptLineId=${base.id}`);
+        }
+      }
+
+      const prNo = await this.docNo.allocate('PRTN', docDate);
+
+      const createdReturn = await (tx as any).purchaseReturn.create({
+        data: {
+          documentNo: prNo,
+          documentDate: docDate,
+          receiptId: receipt.id,
+          warehouseId: receipt.warehouseId,
+          supplierCreditNoteId: dto.supplierCreditNoteId ?? null,
+          reason: dto.reason,
+          notes: dto.notes,
+          createdById: actor.sub,
+          lines: {
+            create: dto.lines.map((rl) => {
+              const base = receiptLineById.get(rl.receiptLineId)!;
+              return {
+                receiptLineId: base.id,
+                productId: base.productId,
+                unitId: base.unitId,
+                quantity: rl.quantity,
+                unitCostBase: '0.000000',
+                lineCostBase: '0.00',
+                notes: rl.notes,
+              };
+            }),
+          },
         },
-      },
-      include: { lines: true },
+        include: { lines: true },
+      });
+
+      return { receipt, postedInv, scn, createdReturn };
     });
 
-    // Create & post StockMove ISSUE
+    // 2) From here onward: your existing logic stays almost the same
+    // Create & post StockMove ISSUE (no lock needed)
     const move = await this.inventory.createMove(actor.sub, {
       type: StockMoveType.ISSUE,
       fromWarehouseId: receipt.warehouseId,
       documentDate: docDate.toISOString(),
       notes: `Purchase return ${createdReturn.documentNo} against GRN ${receipt.documentNo}`,
-      lines: createdReturn.lines.map((l) => ({
+      lines: createdReturn.lines.map((l: any) => ({
         productId: l.productId,
         unitId: l.unitId,
         quantity: l.quantity.toString(),
@@ -615,11 +625,10 @@ export class PurchasingService {
       data: { stockMoveId: move.id },
     });
 
-    // FIFO allocate + update snapshots + valuation entries
+    // FIFO allocate + update snapshots + valuation entries (your current block, unchanged)
     let totalCost = 0;
-
     await this.prisma.$transaction(async (tx) => {
-      for (const l of createdReturn.lines) {
+      for (const l of createdReturn.lines as any[]) {
         const qty = Number(l.quantity);
 
         const alloc = await this.fifo.allocateOutbound(tx as any, {
@@ -659,18 +668,16 @@ export class PurchasingService {
 
     totalCost = Math.round((totalCost + Number.EPSILON) * 100) / 100;
 
-    // Accounting: Dr 327 / Cr 150 (base TRY)
+    // Accounting block stays the same, but uses postedInv/scn from transaction
     if (totalCost > 0) {
       const accInv = await this.getAccountByCode('150');
-      const accDebit = postedInv
-      ? await this.getAccountByCode('328') // Purchase Returns Clearing (after-invoice)
-      : await this.getAccountByCode('327');
+      const accDebit = postedInv ? await this.getAccountByCode('328') : await this.getAccountByCode('327');
 
       await this.accounting.createPostedFromIntegration(actor.sub, {
         documentDate: docDate,
         description: postedInv
-        ? `Purchase return ${createdReturn.documentNo} (after invoice ${postedInv.documentNo}, SCN ${scn!.documentNo})`
-        : `Purchase return ${createdReturn.documentNo} (pre-invoice)`,
+          ? `Purchase return ${createdReturn.documentNo} (after invoice ${postedInv.documentNo}, SCN ${scn!.documentNo})`
+          : `Purchase return ${createdReturn.documentNo} (pre-invoice)`,
         sourceType: 'PurchaseReturn',
         sourceId: createdReturn.id,
         lines: [
@@ -678,8 +685,8 @@ export class PurchasingService {
             accountId: accDebit.id,
             partyId: receipt.po?.supplierId ?? null,
             description: postedInv
-            ? `Purchase return clearing for ${createdReturn.documentNo}`
-            : `Purchase return GRNI reversal for ${createdReturn.documentNo}`,
+              ? `Purchase return clearing for ${createdReturn.documentNo}`
+              : `Purchase return GRNI reversal for ${createdReturn.documentNo}`,
             debit: totalCost.toFixed(2),
             credit: '0',
             currencyCode: 'TRY',

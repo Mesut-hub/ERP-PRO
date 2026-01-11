@@ -35,11 +35,18 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Prettier check
+        run: npm run format:check
+      
+      - name: Typecheck (API)
+        working-directory: apps/api
+        run: npm run typecheck
+
       - name: Run API e2e (CI)
         working-directory: apps/api
         env:
           CI: "true"
-          DATABASE_URL: postgresql://erp:aM6AYeQ2xn25KhCE@localhost:5432/erp?schema=e2e
-          SEED_ADMIN_EMAIL: admin@example.com
-          SEED_ADMIN_PASSWORD: Welcome-123
+          DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
         run: npm run test:ci:e2e
