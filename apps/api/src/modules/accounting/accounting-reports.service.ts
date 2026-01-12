@@ -27,8 +27,16 @@ export class AccountingReportsService {
 
     const whereEntry: any = { status: JournalStatus.POSTED };
 
-    if (params.from) whereEntry.documentDate = { ...(whereEntry.documentDate ?? {}), gte: parseYyyyMmDdAsDateStart(params.from) };
-    if (params.to) whereEntry.documentDate = { ...(whereEntry.documentDate ?? {}), lte: parseYyyyMmDdAsDateEnd(params.to) };
+    if (params.from)
+      whereEntry.documentDate = {
+        ...(whereEntry.documentDate ?? {}),
+        gte: parseYyyyMmDdAsDateStart(params.from),
+      };
+    if (params.to)
+      whereEntry.documentDate = {
+        ...(whereEntry.documentDate ?? {}),
+        lte: parseYyyyMmDdAsDateEnd(params.to),
+      };
 
     const lines = await this.prisma.journalLine.findMany({
       where: {
@@ -36,11 +44,24 @@ export class AccountingReportsService {
         entry: whereEntry,
       },
       include: {
-        entry: { select: { id: true, documentNo: true, documentDate: true, description: true, sourceType: true, sourceId: true } },
+        entry: {
+          select: {
+            id: true,
+            documentNo: true,
+            documentDate: true,
+            description: true,
+            sourceType: true,
+            sourceId: true,
+          },
+        },
         party: { select: { id: true, name: true } },
         account: { select: { code: true, name: true } },
       },
-      orderBy: [{ entry: { documentDate: 'asc' } }, { entry: { documentNo: 'asc' } }, { id: 'asc' }],
+      orderBy: [
+        { entry: { documentDate: 'asc' } },
+        { entry: { documentNo: 'asc' } },
+        { id: 'asc' },
+      ],
     });
 
     // Optional: running balance (debit - credit)
@@ -72,8 +93,16 @@ export class AccountingReportsService {
   async trialBalance(params: { from?: string; to?: string }) {
     const whereEntry: any = { status: JournalStatus.POSTED };
 
-    if (params.from) whereEntry.documentDate = { ...(whereEntry.documentDate ?? {}), gte: parseYyyyMmDdAsDateStart(params.from) };
-    if (params.to) whereEntry.documentDate = { ...(whereEntry.documentDate ?? {}), lte: parseYyyyMmDdAsDateEnd(params.to) };
+    if (params.from)
+      whereEntry.documentDate = {
+        ...(whereEntry.documentDate ?? {}),
+        gte: parseYyyyMmDdAsDateStart(params.from),
+      };
+    if (params.to)
+      whereEntry.documentDate = {
+        ...(whereEntry.documentDate ?? {}),
+        lte: parseYyyyMmDdAsDateEnd(params.to),
+      };
 
     // Fetch lines with accounts and aggregate in memory (simple & correct).
     // If volume grows, we can switch to raw SQL GROUP BY for speed.
@@ -83,19 +112,20 @@ export class AccountingReportsService {
       orderBy: [{ accountId: 'asc' }],
     });
 
-    const byAcc = new Map<string, { code: string; name: string; type: string; debit: number; credit: number }>();
+    const byAcc = new Map<
+      string,
+      { code: string; name: string; type: string; debit: number; credit: number }
+    >();
 
     for (const l of lines) {
       const key = l.account.id;
-      const item =
-        byAcc.get(key) ??
-        {
-          code: l.account.code,
-          name: l.account.name,
-          type: l.account.type,
-          debit: 0,
-          credit: 0,
-        };
+      const item = byAcc.get(key) ?? {
+        code: l.account.code,
+        name: l.account.name,
+        type: l.account.type,
+        debit: 0,
+        credit: 0,
+      };
 
       item.debit += Number(l.debit);
       item.credit += Number(l.credit);

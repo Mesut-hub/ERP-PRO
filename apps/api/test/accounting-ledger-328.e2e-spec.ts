@@ -120,7 +120,10 @@ describe('Accounting رپور: ledger 328 shows PurchaseReturn debit and SCN cle
       .expect(201);
 
     const receiptId = grnRes.body.receiptId;
-    const receiptRes = await request(httpServer).get(`/pur/receipts/${receiptId}`).set(h).expect(200);
+    const receiptRes = await request(httpServer)
+      .get(`/pur/receipts/${receiptId}`)
+      .set(h)
+      .expect(200);
     const receiptLineId = receiptRes.body.lines[0].id;
 
     // ---- Create + post invoice ----
@@ -175,7 +178,11 @@ describe('Accounting رپور: ledger 328 shows PurchaseReturn debit and SCN cle
       .expect(201);
 
     const creditNoteId = cnRes.body.id;
-    await request(httpServer).post(`/pur/invoices/${creditNoteId}/post`).set(h).send({}).expect(201);
+    await request(httpServer)
+      .post(`/pur/invoices/${creditNoteId}/post`)
+      .set(h)
+      .send({})
+      .expect(201);
 
     // ---- Create purchase return linked to SCN ----
     await request(httpServer)
