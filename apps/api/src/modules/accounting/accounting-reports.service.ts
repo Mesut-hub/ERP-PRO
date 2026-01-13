@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { JournalStatus } from '@prisma/client';
+import { AccountType, JournalStatus } from '@prisma/client';
 
 function parseYyyyMmDdAsDateStart(s: string): Date {
   const d = new Date(`${s}T00:00:00.000Z`);
@@ -14,16 +14,33 @@ function parseYyyyMmDdAsDateEnd(s: string): Date {
   return d;
 }
 
+function toInt(v: any, def: number): number {
+  if (v === undefined || v === null || v === '') return def;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
 @Injectable()
 export class AccountingReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async ledger(params: { accountCode: string; from?: string; to?: string }) {
+  async ledger(params: {
+    accountCode: string;
+    from?: string;
+    to?: string;
+    sourceType?: string;
+    partyId?: string;
+    skip?: number;
+    take?: number;
+  }) {
     const acc = await this.prisma.account.findUnique({
       where: { code: params.accountCode },
       select: { id: true, code: true, name: true },
     });
     if (!acc) throw new BadRequestException(`Unknown accountCode ${params.accountCode}`);
+
+    const skip = Math.max(0, toInt(params.skip as any, 0));
+    const take = Math.min(1000, Math.max(1, toInt(params.take as any, 200)));
 
     const whereEntry: any = { status: JournalStatus.POSTED };
 
@@ -37,12 +54,19 @@ export class AccountingReportsService {
         ...(whereEntry.documentDate ?? {}),
         lte: parseYyyyMmDdAsDateEnd(params.to),
       };
+    if (params.sourceType) whereEntry.sourceType = params.sourceType;
+
+    const whereLine: any = {
+      accountId: acc.id,
+      entry: whereEntry,
+    };
+
+    if (params.partyId) whereLine.partyId = params.partyId;
+
+    const total = await this.prisma.journalLine.count({ where: whereLine });
 
     const lines = await this.prisma.journalLine.findMany({
-      where: {
-        accountId: acc.id,
-        entry: whereEntry,
-      },
+      where: whereLine,
       include: {
         entry: {
           select: {
@@ -57,16 +81,15 @@ export class AccountingReportsService {
         party: { select: { id: true, name: true } },
         account: { select: { code: true, name: true } },
       },
-      orderBy: [
-        { entry: { documentDate: 'asc' } },
-        { entry: { documentNo: 'asc' } },
-        { id: 'asc' },
-      ],
+      orderBy: [{ entry: { documentDate: 'asc' } }, { entry: { documentNo: 'asc' } }, { id: 'asc' }],
+      skip,
+      take,
     });
 
-    // Optional: running balance (debit - credit)
+    // Running balance within the returned page (not global running across all pages).
+    // Cursor-based pagination later can support stable global running if needed.
     let running = 0;
-    const data = lines.map((l) => {
+    const rows = lines.map((l) => {
       const debit = Number(l.debit);
       const credit = Number(l.credit);
       running += debit - credit;
@@ -87,10 +110,25 @@ export class AccountingReportsService {
       };
     });
 
-    return { account: acc, rows: data };
+    return {
+      account: acc,
+      meta: {
+        skip,
+        take,
+        total,
+        // cursor later:
+        // nextCursor: null
+      },
+      rows,
+    };
   }
 
-  async trialBalance(params: { from?: string; to?: string }) {
+  async trialBalance(params: {
+    from?: string;
+    to?: string;
+    accountType?: AccountType;
+    onlyNonZero?: boolean;
+  }) {
     const whereEntry: any = { status: JournalStatus.POSTED };
 
     if (params.from)
@@ -104,10 +142,14 @@ export class AccountingReportsService {
         lte: parseYyyyMmDdAsDateEnd(params.to),
       };
 
-    // Fetch lines with accounts and aggregate in memory (simple & correct).
-    // If volume grows, we can switch to raw SQL GROUP BY for speed.
+    const whereLine: any = { entry: whereEntry };
+
+    if (params.accountType) {
+      whereLine.account = { type: params.accountType };
+    }
+
     const lines = await this.prisma.journalLine.findMany({
-      where: { entry: whereEntry },
+      where: whereLine,
       include: { account: { select: { id: true, code: true, name: true, type: true } } },
       orderBy: [{ accountId: 'asc' }],
     });
@@ -119,13 +161,15 @@ export class AccountingReportsService {
 
     for (const l of lines) {
       const key = l.account.id;
-      const item = byAcc.get(key) ?? {
-        code: l.account.code,
-        name: l.account.name,
-        type: l.account.type,
-        debit: 0,
-        credit: 0,
-      };
+      const item =
+        byAcc.get(key) ??
+        {
+          code: l.account.code,
+          name: l.account.name,
+          type: l.account.type,
+          debit: 0,
+          credit: 0,
+        };
 
       item.debit += Number(l.debit);
       item.credit += Number(l.credit);
@@ -133,17 +177,114 @@ export class AccountingReportsService {
       byAcc.set(key, item);
     }
 
-    const rows = Array.from(byAcc.values())
-      .map((r) => ({
-        accountCode: r.code,
-        accountName: r.name,
-        accountType: r.type,
-        debit: Number(r.debit.toFixed(2)),
-        credit: Number(r.credit.toFixed(2)),
-        net: Number((r.debit - r.credit).toFixed(2)),
-      }))
-      .sort((a, b) => a.accountCode.localeCompare(b.accountCode));
+    let rows = Array.from(byAcc.values()).map((r) => ({
+      accountCode: r.code,
+      accountName: r.name,
+      accountType: r.type,
+      debit: Number(r.debit.toFixed(2)),
+      credit: Number(r.credit.toFixed(2)),
+      net: Number((r.debit - r.credit).toFixed(2)),
+    }));
+
+    if (params.onlyNonZero) {
+      rows = rows.filter((r) => Math.abs(r.net) > 0.0000001);
+    }
+
+    rows.sort((a, b) => a.accountCode.localeCompare(b.accountCode));
 
     return { rows };
+  }
+
+  async grni(params: { from?: string; to?: string; supplierId?: string; onlyNonZero?: boolean }) {
+    const acc = await this.prisma.account.findUnique({
+      where: { code: '327' },
+      select: { id: true, code: true, name: true },
+    });
+    if (!acc) throw new BadRequestException('GRNI account 327 not found');
+
+    // Defaults (v1.1)
+    const today = new Date();
+    const yearStart = new Date(Date.UTC(today.getUTCFullYear(), 0, 1, 0, 0, 0, 0));
+
+    const fromDate = params.from ? parseYyyyMmDdAsDateStart(params.from) : yearStart;
+    const toDate = params.to ? parseYyyyMmDdAsDateEnd(params.to) : today;
+
+    const whereEntry: any = {
+      status: JournalStatus.POSTED,
+      documentDate: { gte: fromDate, lte: toDate },
+    };
+
+    const whereLine: any = {
+      accountId: acc.id,
+      entry: whereEntry,
+    };
+
+    if (params.supplierId) whereLine.partyId = params.supplierId;
+
+    const lines = await this.prisma.journalLine.findMany({
+      where: whereLine,
+      select: {
+        debit: true,
+        credit: true,
+        partyId: true,
+        party: { select: { id: true, name: true } },
+      },
+    });
+
+    const byParty = new Map<
+      string,
+      { partyId: string; partyName: string | null; debit: number; credit: number }
+    >();
+
+    for (const l of lines) {
+      const partyId = l.partyId ?? '(no-party)';
+      const item =
+        byParty.get(partyId) ?? {
+          partyId,
+          partyName: l.party?.name ?? null,
+          debit: 0,
+          credit: 0,
+        };
+
+      item.debit += Number(l.debit);
+      item.credit += Number(l.credit);
+
+      if (!item.partyName && l.party?.name) item.partyName = l.party.name;
+
+      byParty.set(partyId, item);
+    }
+
+    const onlyNonZero = params.onlyNonZero ?? true;
+
+    let rows = Array.from(byParty.values()).map((r) => {
+      const debit = Number(r.debit.toFixed(2));
+      const credit = Number(r.credit.toFixed(2));
+      const net = Number((debit - credit).toFixed(2));
+
+      return {
+        supplierId: r.partyId === '(no-party)' ? null : r.partyId,
+        supplierName: r.partyName,
+        debit,
+        credit,
+        net,
+      };
+    });
+
+    if (onlyNonZero) {
+      rows = rows.filter((r) => Math.abs(r.net) > 0.0000001);
+    }
+
+    // Sort by absolute net desc (largest reconciliation differences first)
+    rows.sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+
+    return {
+      account: acc,
+      meta: {
+        from: fromDate.toISOString().slice(0, 10),
+        to: toDate.toISOString().slice(0, 10),
+        onlyNonZero,
+      },
+      rows,
+    };
   }
 }

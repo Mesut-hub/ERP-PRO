@@ -1,8 +1,7 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, Matches } from 'class-validator';
-import { AccountType } from '@prisma/client';
+import { IsOptional, IsString, Matches } from 'class-validator';
 
-export class TrialBalanceQueryDto {
+export class GrniReportQueryDto {
   // YYYY-MM-DD
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
@@ -13,11 +12,11 @@ export class TrialBalanceQueryDto {
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   to?: string;
 
-  // Optional filters
   @IsOptional()
-  @IsIn(Object.values(AccountType))
-  accountType?: AccountType;
+  @IsString()
+  supplierId?: string;
 
+  // default true (we'll enforce default in service)
   @IsOptional()
   @Transform(({ value }) => {
     if (value === undefined) return undefined;

@@ -1,37 +1,26 @@
 'use client';
 
 import { useState } from 'react';
-import { apiFetch } from '../../lib/api';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('admin@example.com');
   const [password, setPassword] = useState('Welcome-123');
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [me, setMe] = useState<any>(null);
+  const [user, setUser] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function onLogin() {
     setError(null);
     try {
-      const r = await apiFetch('/auth/login', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      setAccessToken(r.accessToken);
-    } catch (e: any) {
-      setError(e.message);
-    }
-  }
 
-  async function onMe() {
-    setError(null);
-    try {
-      if (!accessToken) throw new Error('Login first');
-      const r = await apiFetch('/me', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      setMe(r);
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.message ?? 'Login failed');
+
+      setUser(body.user);
     } catch (e: any) {
       setError(e.message);
     }
@@ -40,9 +29,9 @@ export default function LoginPage() {
   async function onRefresh() {
     setError(null);
     try {
-      const r = await apiFetch('/auth/refresh', { method: 'POST' });
-      if (r?.accessToken) setAccessToken(r.accessToken);
-      else setAccessToken(null);
+      const res = await fetch('/api/auth/refresh', { method: 'POST' });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.message ?? 'Refresh failed');
     } catch (e: any) {
       setError(e.message);
     }
@@ -51,9 +40,10 @@ export default function LoginPage() {
   async function onLogout() {
     setError(null);
     try {
-      await apiFetch('/auth/logout', { method: 'POST' });
-      setAccessToken(null);
-      setMe(null);
+      const res = await fetch('/api/auth/logout', { method: 'POST' });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.message ?? 'Logout failed');
+      setUser(null);
     } catch (e: any) {
       setError(e.message);
     }
@@ -80,20 +70,20 @@ export default function LoginPage() {
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button onClick={onLogin}>Login</button>
-        <button onClick={onMe}>/me</button>
         <button onClick={onRefresh}>Refresh</button>
         <button onClick={onLogout}>Logout</button>
       </div>
 
       {error && <p style={{ color: 'crimson' }}>{error}</p>}
 
-      <h2>Access token</h2>
-      <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {accessToken ?? '(none)'}
-      </pre>
+      <h2>User</h2>
+      <pre>{JSON.stringify(user, null, 2)}</pre>
 
-      <h2>/me result</h2>
-      <pre>{JSON.stringify(me, null, 2)}</pre>
+      <p style={{ marginTop: 16 }}>
+        After login, go to <a href="/accounting/trial-balance">Trial Balance</a> or{' '}
+        <a href="/accounting/ledger">Ledger</a> or{' '}
+        <a href="/accounting/grni">GRNI</a>.
+      </p>
     </main>
   );
 }
