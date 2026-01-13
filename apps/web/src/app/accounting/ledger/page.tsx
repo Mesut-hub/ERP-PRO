@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 type LedgerMeta = {
   skip: number;
@@ -19,7 +20,16 @@ function buildQuery(params: Record<string, string | number | undefined>) {
   return sp.toString();
 }
 
+function toInt(v: string | null, def: number) {
+  if (v === null || v === undefined || v === '') return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
 export default function LedgerPage() {
+  const searchParams = useSearchParams();
+  const initializedFromUrl = useRef(false);
+
   const [accountCode, setAccountCode] = useState('328');
   const [sourceType, setSourceType] = useState<string>('');
   const [partyId, setPartyId] = useState<string>('');
@@ -32,6 +42,31 @@ export default function LedgerPage() {
   const [data, setData] = useState<any | null>(null);
   const [meta, setMeta] = useState<LedgerMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Initialize state from URL query params ONCE
+  useEffect(() => {
+    if (initializedFromUrl.current) return;
+
+    const qAccountCode = searchParams.get('accountCode');
+    const qSourceType = searchParams.get('sourceType');
+    const qPartyId = searchParams.get('partyId');
+    const qFrom = searchParams.get('from');
+    const qTo = searchParams.get('to');
+    const qTake = searchParams.get('take');
+    const qSkip = searchParams.get('skip');
+
+    if (qAccountCode) setAccountCode(qAccountCode);
+    if (qSourceType) setSourceType(qSourceType);
+    if (qPartyId) setPartyId(qPartyId);
+    if (qFrom) setFrom(qFrom);
+    if (qTo) setTo(qTo);
+
+    if (qTake) setTake(Math.min(1000, Math.max(1, toInt(qTake, 200))));
+    if (qSkip) setSkip(Math.max(0, toInt(qSkip, 0)));
+
+    initializedFromUrl.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const queryString = useMemo(
     () =>
@@ -59,13 +94,14 @@ export default function LedgerPage() {
     setMeta(body.meta ?? null);
   }
 
+  // Load when initializedFromUrl has been applied once (so deep links work)
   useEffect(() => {
+    if (!initializedFromUrl.current) return;
     load().catch((e) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initializedFromUrl.current]);
 
   function onApplyFilters() {
-    // reset pagination when filters change
     setSkip(0);
     load().catch((e) => setError(e.message));
   }
@@ -84,7 +120,8 @@ export default function LedgerPage() {
       <h1>Ledger</h1>
 
       <p>
-        <a href="/">Home</a> | <a href="/accounting/trial-balance">Trial Balance</a>
+        <a href="/">Home</a> | <a href="/accounting/trial-balance">Trial Balance</a> |{' '}
+        <a href="/accounting/grni">GRNI</a>
       </p>
 
       <section style={{ border: '1px solid #ddd', padding: 12, borderRadius: 8 }}>
@@ -172,7 +209,6 @@ export default function LedgerPage() {
                 onClick={() => {
                   setAccountCode(c);
                   setSkip(0);
-                  // apply immediately
                   setTimeout(() => load().catch((e) => setError(e.message)), 0);
                 }}
               >
@@ -248,13 +284,25 @@ export default function LedgerPage() {
                         const sid = r.journalEntry.sourceId;
 
                         if (st === 'PurchaseReturn' && sid) {
-                          return <a href={`/purchasing/returns/${encodeURIComponent(sid)}`}>{st}:{sid}</a>;
+                          return (
+                            <a href={`/purchasing/returns/${encodeURIComponent(sid)}`}>
+                              {st}:{sid}
+                            </a>
+                          );
                         }
                         if (st === 'SupplierInvoice' && sid) {
-                          return <a href={`/purchasing/invoices/${encodeURIComponent(sid)}`}>{st}:{sid}</a>;
+                          return (
+                            <a href={`/purchasing/invoices/${encodeURIComponent(sid)}`}>
+                              {st}:{sid}
+                            </a>
+                          );
                         }
 
-                        return <span>{st ?? '-'}:{sid ?? '-'}</span>;
+                        return (
+                          <span>
+                            {st ?? '-'}:{sid ?? '-'}
+                          </span>
+                        );
                       })()}
                     </td>
                     <td align="right">{Number(r.line.debit ?? 0).toFixed(2)}</td>

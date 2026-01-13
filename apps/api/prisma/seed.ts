@@ -3,7 +3,115 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+function assertNotProduction() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Refusing to run seed in production (NODE_ENV=production).');
+  }
+}
+
+function yyyyMmDd(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+async function ensureExchangeRateUSDTRY(rateDate: Date) {
+  // You may already have rates logic in app; for demo we seed one rate for today if missing.
+  await prisma.exchangeRate.upsert({
+    where: {
+      fromCode_toCode_rateDate: {
+        fromCode: 'USD',
+        toCode: 'TRY',
+        rateDate,
+      },
+    },
+    update: { rate: '30' as any, source: 'seed' },
+    create: { fromCode: 'USD', toCode: 'TRY', rateDate, rate: '30' as any, source: 'seed' },
+  });
+}
+
+async function ensureSupplier(code: string, name: string, email: string) {
+  return prisma.party.upsert({
+    where: { code },
+    update: { name, email, type: 'SUPPLIER', isActive: true, defaultCurrencyCode: 'USD' },
+    create: { code, name, email, type: 'SUPPLIER', isActive: true, defaultCurrencyCode: 'USD' },
+  });
+}
+
+async function ensureProduct(sku: string, name: string, baseUnitId: string) {
+  return prisma.product.upsert({
+    where: { sku },
+    update: { name, type: 'GOODS', baseUnitId, vatCode: 'KDV_20', isActive: true },
+    create: { sku, name, type: 'GOODS', baseUnitId, vatCode: 'KDV_20', isActive: true },
+  });
+}
+
+async function ensureDocSequencesForDay(day: Date) {
+  const y = day.getFullYear();
+  const m = String(day.getMonth() + 1).padStart(2, '0');
+  const d = String(day.getDate()).padStart(2, '0');
+  const dayKey = `${y}${m}${d}`;
+
+  const seqCodes = ['JE', 'PO', 'GRN', 'SI', 'SO', 'DEL', 'PAY', 'MOV', 'CCN', 'CDN', 'SCN', 'SDN'];
+
+  for (const sc of seqCodes) {
+    await prisma.documentSequence.upsert({
+      where: { sequenceCode_periodKey: { sequenceCode: sc, periodKey: dayKey } },
+      update: {},
+      create: { sequenceCode: sc, periodKey: dayKey, nextNumber: 1 },
+    });
+  }
+}
+
+async function demoData() {
+  // Create realistic demo documents via the DB layer.
+  // NOTE: We do NOT call services here to keep seed independent from Nest runtime.
+  // We create only master/demo entities. Documents themselves are better created via API/service,
+  // but that requires bootstrapping Nest. We'll keep demo "data freshness" by updating dates and sequences,
+  // and rely on you running a small curl script (next step) OR we can implement a Nest-based seeder later.
+  //
+  // For now: create two suppliers + one product + ensure sequences for today.
+  const now = new Date();
+  await ensureDocSequencesForDay(now);
+
+  const pcs = await prisma.unit.findUnique({ where: { code: 'PCS' } });
+  if (!pcs) throw new Error('PCS unit missing; run base seed first.');
+
+  const mainWh = await prisma.warehouse.findUnique({ where: { code: 'MAIN' } });
+  if (!mainWh) throw new Error('MAIN warehouse missing; run base seed first.');
+
+  // Exchange rate for today (optional)
+  await ensureExchangeRateUSDTRY(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)));
+
+  const supA = await ensureSupplier(
+    'SUP-DEMO-A',
+    'Demo Supplier A',
+    'demo-supplier-a@example.com',
+  );
+
+  const supB = await ensureSupplier(
+    'SUP-DEMO-B',
+    'Demo Supplier B',
+    'demo-supplier-b@example.com',
+  );
+
+  await ensureProduct('DEMO-SKU-001', 'Demo Product', pcs.id);
+
+  console.log('Demo seed completed (master/demo entities only).');
+  console.log('Suppliers:', supA.code, supB.code);
+  console.log('Warehouse:', mainWh.code);
+  console.log('Product SKU: DEMO-SKU-001');
+  console.log('');
+  console.log(
+    'Next: run demo scenario through API to generate accounting entries (PO→GRN→Invoice→SCN→Return).',
+  );
+  console.log(
+    'I can provide a script for that (recommended) because services handle posting logic and journal entries.',
+  );
+}
+
 async function main() {
+  assertNotProduction();
+
+  const seedMode = (process.env.SEED_MODE ?? 'base').toLowerCase();
   const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com';
   const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'Welcome-123';
 
@@ -184,7 +292,7 @@ async function main() {
     { code: '320', name: 'Accounts Payable (AP)', type: 'LIABILITY' as const },
     { code: '327', name: 'Goods Received Not Invoiced (GRNI)', type: 'LIABILITY' as const },
 
-    // NEW: Purchase Returns Clearing (after-invoice returns awaiting SCN matching)
+    // Purchase Returns Clearing
     { code: '328', name: 'Purchase Returns Clearing', type: 'LIABILITY' as const },
 
     { code: '391', name: 'VAT Payable (KDV)', type: 'LIABILITY' as const },
@@ -227,25 +335,22 @@ async function main() {
     create: { code, startDate: start, endDate: end, status: 'OPEN' },
   });
 
-  // --- NEW: initialize DocumentSequence rows for today (optional but recommended) ---
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const dayKey = `${y}${m}${d}`;
+  // --- initialize DocumentSequence rows for today ---
+  await ensureDocSequencesForDay(now);
 
-  const seqCodes = ['JE', 'PO', 'GRN', 'SI', 'SO', 'DEL', 'PAY', 'MOV', 'CCN', 'CDN', 'SCN', 'SDN'];
+  console.log('Base seed completed.');
+  console.log('Admin email:', adminEmail);
+  console.log('Admin password:', adminPassword);
 
-  for (const sc of seqCodes) {
-    await prisma.documentSequence.upsert({
-      where: { sequenceCode_periodKey: { sequenceCode: sc, periodKey: dayKey } },
-      update: {},
-      create: { sequenceCode: sc, periodKey: dayKey, nextNumber: 1 },
-    });
+  if (seedMode === 'demo') {
+    console.log('Running demo seed...');
+    await demoData();
+  } else {
+    console.log(`Seed mode: ${seedMode} (set SEED_MODE=demo to create demo entities).`);
   }
 
   console.log('Seed completed.');
-  console.log('Admin email:', adminEmail);
-  console.log('Admin password:', adminPassword);
+  console.log('Today:', yyyyMmDd(now));
 }
 
 main()

@@ -2,16 +2,14 @@
 
 import { useEffect, useState } from 'react';
 
-export default function SupplierInvoiceDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default function SupplierInvoiceDetailPage({ params }: { params: { id: string } }) {
   const [data, setData] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setError(null);
+    setData(null);
+
     const res = await fetch(`/api/pur/invoices/${encodeURIComponent(params.id)}`);
     const body = await res.json().catch(() => null);
     if (!res.ok) throw new Error(body?.message ?? 'Failed to load supplier invoice');
@@ -43,7 +41,10 @@ export default function SupplierInvoiceDetailPage({
           <ul>
             <li>Kind: {data.kind ?? '-'}</li>
             <li>Status: {data.status ?? '-'}</li>
-            <li>Document date: {data.documentDate ? new Date(data.documentDate).toISOString().slice(0, 10) : '-'}</li>
+            <li>
+              Document date:{' '}
+              {data.documentDate ? new Date(data.documentDate).toISOString().slice(0, 10) : '-'}
+            </li>
             <li>PO: {data.poId ?? '-'}</li>
             <li>Note of: {data.noteOfId ?? '-'}</li>
             <li>Journal Entry: {data.journalEntry?.id ?? '-'}</li>
