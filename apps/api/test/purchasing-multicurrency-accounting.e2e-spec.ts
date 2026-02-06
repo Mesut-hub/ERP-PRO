@@ -217,7 +217,6 @@ describe('Purchasing: Multi-currency accounting (e2e)', () => {
     const grnRes = await request(httpServer)
       .post(`/pur/pos/${poId}/receive`)
       .set(h)
-      .set(h)
       .send({ lines: [{ poLineId, quantity: '10' }] })
       .expect(201);
 
