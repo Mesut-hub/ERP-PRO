@@ -30,6 +30,11 @@ describe('Purchasing: GRNI multi-currency (e2e)', () => {
   });
 
   it('produces GRNI JE with base TRY amounts when PO currency is USD', async () => {
+    // Test constants
+    const UNIT_PRICE_USD = 50;
+    const EXCHANGE_RATE = 30;
+    const EXPECTED_BASE_TRY = UNIT_PRICE_USD * EXCHANGE_RATE; // 1500.00
+
     // ---- Warehouse + Unit (seeded) ----
     const whRes = await request(httpServer).get('/inv/warehouses').set(h).expect(200);
     const whId = whRes.body.find((w: any) => w.code === 'MAIN')?.id;
@@ -86,8 +91,7 @@ describe('Purchasing: GRNI multi-currency (e2e)', () => {
 
     expect(productId).toBeTruthy();
 
-    // ---- Create USD PO with exchangeRateToBase=30 ----
-    // qty=1, unitPrice=$50 => net=$50 => in TRY=1500
+    // ---- Create USD PO with exchangeRateToBase ----
     const poRes = await request(httpServer)
       .post('/pur/pos')
       .set(h)
@@ -95,13 +99,13 @@ describe('Purchasing: GRNI multi-currency (e2e)', () => {
         supplierId,
         warehouseId: whId,
         currencyCode: 'USD',
-        exchangeRateToBase: '30',
+        exchangeRateToBase: EXCHANGE_RATE.toString(),
         lines: [
           {
             productId,
             unitId: pcsId,
             quantity: '1',
-            unitPrice: '50',
+            unitPrice: UNIT_PRICE_USD.toString(),
             vatCode: 'KDV_20',
           },
         ],
@@ -143,17 +147,17 @@ describe('Purchasing: GRNI multi-currency (e2e)', () => {
     // Find the inventory debit line (account 150)
     const invLine = je.lines.find((l: any) => l.account?.code === '150');
     expect(invLine).toBeTruthy();
-    expect(Number(invLine.debit)).toBe(1500.00); // base TRY: $50 * 30
+    expect(Number(invLine.debit)).toBe(EXPECTED_BASE_TRY);
     expect(invLine.credit).toBe('0');
     expect(invLine.currencyCode).toBe('USD');
-    expect(Number(invLine.amountCurrency)).toBe(50.00); // document currency
+    expect(Number(invLine.amountCurrency)).toBe(UNIT_PRICE_USD);
 
     // Find the GRNI credit line (account 327)
     const grniLine = je.lines.find((l: any) => l.account?.code === '327');
     expect(grniLine).toBeTruthy();
     expect(grniLine.debit).toBe('0');
-    expect(Number(grniLine.credit)).toBe(1500.00); // base TRY: $50 * 30
+    expect(Number(grniLine.credit)).toBe(EXPECTED_BASE_TRY);
     expect(grniLine.currencyCode).toBe('USD');
-    expect(Number(grniLine.amountCurrency)).toBe(50.00); // document currency
+    expect(Number(grniLine.amountCurrency)).toBe(UNIT_PRICE_USD);
   });
 });
