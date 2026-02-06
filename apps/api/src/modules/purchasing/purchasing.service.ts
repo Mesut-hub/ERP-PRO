@@ -431,7 +431,7 @@ export class PurchasingService {
         action: AuditAction.POST,
         entity: 'PurchaseReceipt',
         entityId: receipt.id,
-        after: { journalEntryId: je.id, net: net.toFixed(2) },
+        after: { journalEntryId: je.id, net: netDoc.toFixed(2) },
         message: `Posted GRNI for receipt ${receipt.documentNo} with JE ${je.documentNo}`,
       });
     }

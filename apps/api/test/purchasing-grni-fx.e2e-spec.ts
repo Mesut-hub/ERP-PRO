@@ -143,17 +143,17 @@ describe('Purchasing: GRNI multi-currency (e2e)', () => {
     // Find the inventory debit line (account 150)
     const invLine = je.lines.find((l: any) => l.account?.code === '150');
     expect(invLine).toBeTruthy();
-    expect(invLine.debit).toBe('1500.00'); // base TRY: $50 * 30
+    expect(Number(invLine.debit)).toBe(1500.00); // base TRY: $50 * 30
     expect(invLine.credit).toBe('0');
     expect(invLine.currencyCode).toBe('USD');
-    expect(invLine.amountCurrency).toBe('50.00'); // document currency
+    expect(Number(invLine.amountCurrency)).toBe(50.00); // document currency
 
     // Find the GRNI credit line (account 327)
     const grniLine = je.lines.find((l: any) => l.account?.code === '327');
     expect(grniLine).toBeTruthy();
     expect(grniLine.debit).toBe('0');
-    expect(grniLine.credit).toBe('1500.00'); // base TRY: $50 * 30
+    expect(Number(grniLine.credit)).toBe(1500.00); // base TRY: $50 * 30
     expect(grniLine.currencyCode).toBe('USD');
-    expect(grniLine.amountCurrency).toBe('50.00'); // document currency
+    expect(Number(grniLine.amountCurrency)).toBe(50.00); // document currency
   });
 });
