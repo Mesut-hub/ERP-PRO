@@ -121,9 +121,10 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
     expect(jes.length).toBeGreaterThanOrEqual(1);
 
     // Find the GRNI accrual JE
-    const grniJe = jes.find((je: any) => 
-      je.lines?.some((ln: any) => ln.account?.code === '150') &&
-      je.lines?.some((ln: any) => ln.account?.code === '327')
+    const grniJe = jes.find(
+      (je: any) =>
+        je.lines?.some((ln: any) => ln.account?.code === '150') &&
+        je.lines?.some((ln: any) => ln.account?.code === '327'),
     );
     expect(grniJe).toBeTruthy();
 
@@ -136,16 +137,16 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
 
     // Expected: net = 50 USD, rate = 30, base = 1500.00 TRY
     // Line 150 (Inventory): Dr 1500.00 TRY, amountCurrency 50.00 USD
-    expect(Number(line150.debit)).toBe(1500.00);
+    expect(Number(line150.debit)).toBe(1500.0);
     expect(Number(line150.credit)).toBe(0);
     expect(line150.currencyCode).toBe('USD');
-    expect(Number(line150.amountCurrency)).toBe(50.00);
+    expect(Number(line150.amountCurrency)).toBe(50.0);
 
     // Line 327 (GRNI): Cr 1500.00 TRY, amountCurrency 50.00 USD
     expect(Number(line327.debit)).toBe(0);
-    expect(Number(line327.credit)).toBe(1500.00);
+    expect(Number(line327.credit)).toBe(1500.0);
     expect(line327.currencyCode).toBe('USD');
-    expect(Number(line327.amountCurrency)).toBe(50.00);
+    expect(Number(line327.amountCurrency)).toBe(50.0);
   });
 
   it('USD supplier invoice creates JE with base TRY amounts and USD currency/amountCurrency', async () => {
@@ -227,10 +228,11 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
     expect(jes.length).toBeGreaterThanOrEqual(1);
 
     // Find the main invoice JE (should have 327, 191, 320)
-    const invJe = jes.find((je: any) =>
-      je.lines?.some((ln: any) => ln.account?.code === '327') &&
-      je.lines?.some((ln: any) => ln.account?.code === '191') &&
-      je.lines?.some((ln: any) => ln.account?.code === '320')
+    const invJe = jes.find(
+      (je: any) =>
+        je.lines?.some((ln: any) => ln.account?.code === '327') &&
+        je.lines?.some((ln: any) => ln.account?.code === '191') &&
+        je.lines?.some((ln: any) => ln.account?.code === '320'),
     );
     expect(invJe).toBeTruthy();
 
@@ -244,22 +246,22 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
     expect(line320).toBeTruthy();
 
     // Line 327 (GRNI clearing): Dr 1500.00 TRY, amountCurrency 50.00 USD
-    expect(Number(line327.debit)).toBe(1500.00);
+    expect(Number(line327.debit)).toBe(1500.0);
     expect(Number(line327.credit)).toBe(0);
     expect(line327.currencyCode).toBe('USD');
-    expect(Number(line327.amountCurrency)).toBe(50.00);
+    expect(Number(line327.amountCurrency)).toBe(50.0);
 
     // Line 191 (VAT): Dr 300.00 TRY, amountCurrency 10.00 USD
-    expect(Number(line191.debit)).toBe(300.00);
+    expect(Number(line191.debit)).toBe(300.0);
     expect(Number(line191.credit)).toBe(0);
     expect(line191.currencyCode).toBe('USD');
-    expect(Number(line191.amountCurrency)).toBe(10.00);
+    expect(Number(line191.amountCurrency)).toBe(10.0);
 
     // Line 320 (AP): Cr 1800.00 TRY, amountCurrency 60.00 USD
     expect(Number(line320.debit)).toBe(0);
-    expect(Number(line320.credit)).toBe(1800.00);
+    expect(Number(line320.credit)).toBe(1800.0);
     expect(line320.currencyCode).toBe('USD');
-    expect(Number(line320.amountCurrency)).toBe(60.00);
+    expect(Number(line320.amountCurrency)).toBe(60.0);
   });
 
   it('USD unmatched supplier invoice (expense model) creates JE with base TRY amounts', async () => {
@@ -310,10 +312,11 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
     expect(jes.length).toBeGreaterThanOrEqual(1);
 
     // Find the main invoice JE (should have 770, 191, 320)
-    const invJe = jes.find((je: any) =>
-      je.lines?.some((ln: any) => ln.account?.code === '770') &&
-      je.lines?.some((ln: any) => ln.account?.code === '191') &&
-      je.lines?.some((ln: any) => ln.account?.code === '320')
+    const invJe = jes.find(
+      (je: any) =>
+        je.lines?.some((ln: any) => ln.account?.code === '770') &&
+        je.lines?.some((ln: any) => ln.account?.code === '191') &&
+        je.lines?.some((ln: any) => ln.account?.code === '320'),
     );
     expect(invJe).toBeTruthy();
 
@@ -326,22 +329,22 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
     expect(line320).toBeTruthy();
 
     // Line 770 (Expense): Dr 2500.00 TRY, amountCurrency 100.00 USD
-    expect(Number(line770.debit)).toBe(2500.00);
+    expect(Number(line770.debit)).toBe(2500.0);
     expect(Number(line770.credit)).toBe(0);
     expect(line770.currencyCode).toBe('USD');
-    expect(Number(line770.amountCurrency)).toBe(100.00);
+    expect(Number(line770.amountCurrency)).toBe(100.0);
 
     // Line 191 (VAT): Dr 500.00 TRY, amountCurrency 20.00 USD
-    expect(Number(line191.debit)).toBe(500.00);
+    expect(Number(line191.debit)).toBe(500.0);
     expect(Number(line191.credit)).toBe(0);
     expect(line191.currencyCode).toBe('USD');
-    expect(Number(line191.amountCurrency)).toBe(20.00);
+    expect(Number(line191.amountCurrency)).toBe(20.0);
 
     // Line 320 (AP): Cr 3000.00 TRY, amountCurrency 120.00 USD
     expect(Number(line320.debit)).toBe(0);
-    expect(Number(line320.credit)).toBe(3000.00);
+    expect(Number(line320.credit)).toBe(3000.0);
     expect(line320.currencyCode).toBe('USD');
-    expect(Number(line320.amountCurrency)).toBe(120.00);
+    expect(Number(line320.amountCurrency)).toBe(120.0);
   });
 
   it('TRY invoice remains unchanged (rate = 1)', async () => {
@@ -382,17 +385,15 @@ describe('Purchasing: Base Currency (TRY) Accounting (e2e)', () => {
     const jes = await getJEsBySource(httpServer, h, 'SupplierInvoice', invoiceId);
     expect(jes.length).toBeGreaterThanOrEqual(1);
 
-    const invJe = jes.find((je: any) =>
-      je.lines?.some((ln: any) => ln.account?.code === '770')
-    );
+    const invJe = jes.find((je: any) => je.lines?.some((ln: any) => ln.account?.code === '770'));
     expect(invJe).toBeTruthy();
 
     const line770 = invJe.lines?.find((ln: any) => ln.account?.code === '770');
     expect(line770).toBeTruthy();
 
     // Line 770: Dr 100.00 TRY, amountCurrency 100.00 TRY
-    expect(Number(line770.debit)).toBe(100.00);
+    expect(Number(line770.debit)).toBe(100.0);
     expect(line770.currencyCode).toBe('TRY');
-    expect(Number(line770.amountCurrency)).toBe(100.00);
+    expect(Number(line770.amountCurrency)).toBe(100.0);
   });
 });
