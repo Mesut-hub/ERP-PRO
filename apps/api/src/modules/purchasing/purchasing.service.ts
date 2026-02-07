@@ -50,6 +50,11 @@ export class PurchasingService {
     return lines.reduce((s, l) => s + Number(l.lineSubtotal ?? 0), 0);
   }
 
+  private roundToBaseCurrency(amount: number, rate: number): number {
+    return Math.round((amount * rate + Number.EPSILON) * 100) / 100;
+  }
+
+
   private async ensureScnPurchaseReturnClearingJe(params: {
     actorId: string;
     scnId: string;
@@ -397,7 +402,7 @@ export class PurchasingService {
       const accGrni = await this.getAccountByCode('327');
 
       // Convert to base TRY for debit/credit
-      const netBase = Math.round((net * rateToTry + Number.EPSILON) * 100) / 100;
+      const netBase = this.roundToBaseCurrency(net, rateToTry);
 
       const je = await this.accounting.createPostedFromIntegration(actor.sub, {
         documentDate: receipt.documentDate,
@@ -1124,9 +1129,9 @@ export class PurchasingService {
     );
 
     // Convert to base TRY amounts
-    const netBase = Math.round((net * rateToTry + Number.EPSILON) * 100) / 100;
-    const vatBase = Math.round((vat * rateToTry + Number.EPSILON) * 100) / 100;
-    const totalBase = Math.round((total * rateToTry + Number.EPSILON) * 100) / 100;
+    const netBase = this.roundToBaseCurrency(net, rateToTry);
+    const vatBase = this.roundToBaseCurrency(vat, rateToTry);
+    const totalBase = this.roundToBaseCurrency(total, rateToTry);
 
     const accAP = await this.getAccountByCode('320');
     const accVatIn = await this.getAccountByCode('191');
