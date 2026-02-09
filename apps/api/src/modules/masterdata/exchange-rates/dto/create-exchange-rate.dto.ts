@@ -1,4 +1,4 @@
-import { IsDateString, IsNumberString, IsString, Length } from 'class-validator';
+import { IsDateString, IsNumberString, IsOptional, IsString, Length } from 'class-validator';
 
 export class CreateExchangeRateDto {
   @IsString()
@@ -15,4 +15,8 @@ export class CreateExchangeRateDto {
 
   @IsDateString()
   rateDate!: string; // ISO date
+
+  @IsOptional()
+  @IsString()
+  source?: string;
 }

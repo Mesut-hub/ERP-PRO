@@ -23,19 +23,37 @@ export class ExchangeRatesService {
     return new Date(`${y}-${m}-${day}T00:00:00.000Z`);
   }
 
-  async list(params: { fromCode?: string; toCode?: string; take?: number }) {
+  async list(params: {
+    fromCode?: string;
+    toCode?: string;
+    source?: string;
+    rateDate?: string; // YYYY-MM-DD or ISO
+    take?: number;
+  }) {
+    let rateDateKey: Date | undefined;
+
+    if (params.rateDate) {
+      // Accept YYYY-MM-DD (treat as Istanbul day), or ISO strings
+      const isYmd = /^\d{4}-\d{2}-\d{2}$/.test(params.rateDate);
+      const parsed = isYmd ? new Date(`${params.rateDate}T12:00:00.000Z`) : new Date(params.rateDate);
+
+      if (Number.isNaN(parsed.getTime())) throw new BadRequestException('Invalid rateDate');
+      rateDateKey = this.toIstanbulDayKey(parsed);
+    }
+
     return this.prisma.exchangeRate.findMany({
       where: {
         fromCode: params.fromCode,
         toCode: params.toCode,
+        source: params.source,
+        rateDate: rateDateKey,
       },
-      orderBy: { rateDate: 'desc' },
-      take: params.take ?? 100,
+      orderBy: [{ rateDate: 'desc' }, { fromCode: 'asc' }, { toCode: 'asc' }],
+      take: params.take ?? 200,
     });
   }
 
   async create(actorId: string, dto: CreateExchangeRateDto) {
-    // Defensive checks to avoid 500 even if body parsing fails
     if (!dto) throw new BadRequestException('Request body is required');
     if (!dto.fromCode || !dto.toCode)
       throw new BadRequestException('fromCode and toCode are required');
@@ -49,7 +67,9 @@ export class ExchangeRatesService {
     if (!Number.isFinite(rateNum) || rateNum <= 0)
       throw new BadRequestException('rate must be > 0');
 
-    const parsed = new Date(dto.rateDate);
+    const isYmd = /^\d{4}-\d{2}-\d{2}$/.test(dto.rateDate);
+    const parsed = isYmd ? new Date(`${dto.rateDate}T12:00:00.000Z`) : new Date(dto.rateDate);
+
     if (Number.isNaN(parsed.getTime()))
       throw new BadRequestException('rateDate must be a valid ISO 8601 date string');
 
@@ -64,14 +84,14 @@ export class ExchangeRatesService {
       where: { fromCode_toCode_rateDate: { fromCode, toCode, rateDate } },
       update: {
         rate: rateNum.toFixed(8) as any,
-        source: 'manual',
+        source: dto.source?.trim() || 'manual',
       },
       create: {
         fromCode,
         toCode,
         rateDate,
         rate: rateNum.toFixed(8) as any,
-        source: 'manual',
+        source: dto.source?.trim() || 'manual',
       },
     });
   }

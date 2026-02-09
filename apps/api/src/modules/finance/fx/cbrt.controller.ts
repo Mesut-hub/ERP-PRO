@@ -9,9 +9,13 @@ import { CbrtService } from './cbrt.service';
 export class CbrtController {
   constructor(private readonly cbrt: CbrtService) {}
 
+  /**
+   * POST /md/exchange-rates/cbrt/sync?date=YYYY-MM-DD
+   * - If date omitted, uses today (Istanbul day).
+   */
   @Post('sync')
   @RequirePermissions('md.exchange_rate.manage')
   sync(@Query('date') date?: string) {
-    return this.cbrt.syncDaily(date); // date optional => today
+    return this.cbrt.syncDaily(date);
   }
 }

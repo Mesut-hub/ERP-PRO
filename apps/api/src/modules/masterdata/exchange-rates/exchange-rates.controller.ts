@@ -14,11 +14,18 @@ export class ExchangeRatesController {
 
   @Get()
   @RequirePermissions('md.exchange_rate.read')
-  list(@Query('from') from?: string, @Query('to') to?: string) {
+  list(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('source') source?: string,
+    @Query('rateDate') rateDate?: string,
+  ) {
     return this.service.list({
-      fromCode: from?.toUpperCase(),
-      toCode: to?.toUpperCase(),
-      take: 100,
+      fromCode: from?.toUpperCase().trim() || undefined,
+      toCode: to?.toUpperCase().trim() || undefined,
+      source: source?.trim() || undefined,
+      rateDate: rateDate?.trim() || undefined,
+      take: 500,
     });
   }
 
