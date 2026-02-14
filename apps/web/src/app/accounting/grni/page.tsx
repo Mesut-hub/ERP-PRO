@@ -1,6 +1,13 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Skeleton } from '@/components/ui/skeleton';
 
 function buildQuery(params: Record<string, string | undefined>) {
   const sp = new URLSearchParams();
@@ -21,6 +28,7 @@ export default function GrniPage() {
 
   const [data, setData] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
 
   const qs = useMemo(
     () =>
@@ -35,142 +43,181 @@ export default function GrniPage() {
 
   async function load() {
     setError(null);
-    setData(null);
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/acc/reports/grni?${qs}`);
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.message ?? 'Failed to load GRNI report');
 
-    const res = await fetch(`/api/acc/reports/grni?${qs}`);
-    const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(body?.message ?? 'Failed to load GRNI report');
-
-    setData(body);
+      setData(body);
+    } catch (e: any) {
+      setData(null);
+      setError(e?.message ?? 'Failed to load GRNI report');
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    load().catch((e) => setError(e.message));
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <main style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>GRNI Reconciliation (327)</h1>
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold">GRNI Reconciliation (327)</h1>
+          <p className="text-sm text-muted-foreground">
+            Goods received not invoiced — supplier reconciliation with ledger drilldown.
+          </p>
+        </div>
+        <div className="hidden md:flex items-center gap-2 text-sm">
+          <Link className="text-muted-foreground hover:text-foreground" href="/">Home</Link>
+          <span className="text-muted-foreground">/</span>
+          <Link className="text-muted-foreground hover:text-foreground" href="/accounting/ledger">
+            Ledger
+          </Link>
+          <span className="text-muted-foreground">/</span>
+          <Link className="text-muted-foreground hover:text-foreground" href="/accounting/trial-balance">
+            Trial Balance
+          </Link>
+        </div>
+      </div>
 
-      <p>
-        <a href="/">Home</a> | <a href="/accounting/ledger">Ledger</a> |{' '}
-        <a href="/accounting/trial-balance">Trial Balance</a>
-      </p>
+      {error && <Alert variant="destructive">{error}</Alert>}
 
-      <section style={{ border: '1px solid #ddd', padding: 12, borderRadius: 8 }}>
-        <h2 style={{ marginTop: 0 }}>Filters</h2>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12 }}>
-          <div>
-            <label>Supplier ID (optional)</label>
-            <input
-              style={{ width: '100%', padding: 8, display: 'block' }}
-              value={supplierId}
-              onChange={(e) => setSupplierId(e.target.value)}
-              placeholder="partyId"
-            />
-          </div>
-
-          <div>
-            <label>From (YYYY-MM-DD)</label>
-            <input
-              style={{ width: '100%', padding: 8, display: 'block' }}
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              placeholder="(default: year start)"
-            />
-          </div>
-
-          <div>
-            <label>To (YYYY-MM-DD)</label>
-            <input
-              style={{ width: '100%', padding: 8, display: 'block' }}
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              placeholder="(default: today)"
-            />
-          </div>
-
-          <div>
-            <label>Only non-zero</label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', height: 42 }}>
-              <input
-                type="checkbox"
-                checked={onlyNonZero}
-                onChange={(e) => setOnlyNonZero(e.target.checked)}
+      <Card>
+        <CardHeader>
+          <CardTitle>Filters</CardTitle>
+          <CardDescription>Adjust parameters and apply to refresh the report.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="space-y-2">
+              <Label>Supplier ID (optional)</Label>
+              <Input
+                value={supplierId}
+                onChange={(e) => setSupplierId(e.target.value)}
+                placeholder="partyId"
               />
-              <span>{onlyNonZero ? 'true' : 'false'}</span>
+            </div>
+
+            <div className="space-y-2">
+              <Label>From (YYYY-MM-DD)</Label>
+              <Input
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                placeholder="(default: year start)"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>To (YYYY-MM-DD)</Label>
+              <Input
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                placeholder="(default: today)"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Only non-zero</Label>
+              <div className="h-9 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={onlyNonZero}
+                  onChange={(e) => setOnlyNonZero(e.target.checked)}
+                />
+                <span className="text-sm text-muted-foreground">{onlyNonZero ? 'true' : 'false'}</span>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={() => load().catch((e) => setError(e.message))}>Apply</button>
-          <span style={{ marginLeft: 12, fontSize: 12, color: '#555' }}>
-            Query: <code>{qs}</code>
-          </span>
-        </div>
-      </section>
+          <div className="flex flex-col md:flex-row md:items-center gap-3">
+            <Button onClick={load} disabled={loading}>
+              {loading ? 'Loading…' : 'Apply'}
+            </Button>
+            <div className="text-xs text-muted-foreground">
+              Query: <code className="text-foreground">{qs}</code>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <section style={{ marginTop: 12 }}>
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
-        {!data && !error && <p>Loading...</p>}
+      {loading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Loading</CardTitle>
+            <CardDescription>Building GRNI report…</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </CardContent>
+        </Card>
+      )}
 
-        {data && (
-          <>
-            <h2>
-              Account {data.account.code} - {data.account.name}
-            </h2>
+      {!loading && data && (
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              Account {data.account.code} — {data.account.name}
+            </CardTitle>
             {data.meta && (
-              <p style={{ color: '#555', fontSize: 12 }}>
+              <CardDescription>
                 Effective range: <code>{data.meta.from}</code> → <code>{data.meta.to}</code>, onlyNonZero:{' '}
                 <code>{String(data.meta.onlyNonZero)}</code>
-              </p>
+              </CardDescription>
             )}
-
-            <table cellPadding={8} style={{ borderCollapse: 'collapse', width: '100%' }}>
-              <thead>
-                <tr>
-                  <th align="left">Supplier</th>
-                  <th align="right">Debit</th>
-                  <th align="right">Credit</th>
-                  <th align="right">Net</th>
-                  <th align="left">Drilldown</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data.rows ?? []).map((r: any, idx: number) => (
-                  <tr key={idx} style={{ borderTop: '1px solid #ddd' }}>
-                    <td>
-                      {r.supplierName ?? '(unknown)'}{' '}
-                      <span style={{ color: '#777', fontSize: 12 }}>
-                        {r.supplierId ?? '(no partyId)'}
-                      </span>
-                    </td>
-                    <td align="right">{Number(r.debit ?? 0).toFixed(2)}</td>
-                    <td align="right">{Number(r.credit ?? 0).toFixed(2)}</td>
-                    <td align="right">{Number(r.net ?? 0).toFixed(2)}</td>
-                    <td>
-                      {r.supplierId ? (
-                        <a
-                          href={`/accounting/ledger?accountCode=327&partyId=${encodeURIComponent(
-                            r.supplierId,
-                          )}`}
-                        >
-                          View ledger
-                        </a>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
+                    <th>Supplier</th>
+                    <th className="text-right">Debit</th>
+                    <th className="text-right">Credit</th>
+                    <th className="text-right">Net</th>
+                    <th>Drilldown</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </section>
-    </main>
+                </thead>
+                <tbody className="[&>tr]:border-t [&>tr]:border-border">
+                  {(data.rows ?? []).map((r: any, idx: number) => (
+                    <tr key={idx} className="[&>td]:px-3 [&>td]:py-2">
+                      <td className="min-w-[240px]">
+                        <div className="font-medium">{r.supplierName ?? '(unknown)'}</div>
+                        <div className="text-xs text-muted-foreground font-mono">
+                          {r.supplierId ?? '(no partyId)'}
+                        </div>
+                      </td>
+                      <td className="text-right tabular-nums">{Number(r.debit ?? 0).toFixed(2)}</td>
+                      <td className="text-right tabular-nums">{Number(r.credit ?? 0).toFixed(2)}</td>
+                      <td className="text-right tabular-nums">{Number(r.net ?? 0).toFixed(2)}</td>
+                      <td>
+                        {r.supplierId ? (
+                          <Link
+                            className="text-primary underline-offset-4 hover:underline"
+                            href={`/accounting/ledger?accountCode=327&partyId=${encodeURIComponent(
+                              r.supplierId,
+                            )}`}
+                          >
+                            View ledger
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }

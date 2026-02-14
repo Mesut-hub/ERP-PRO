@@ -21,6 +21,10 @@ const nav = [
     ],
   },
   {
+    section: 'Inventory',
+    items: [{ href: '/inventory/stock-valuation', label: 'Stock Valuation' }],
+  },
+  {
     section: 'Master Data',
     items: [{ href: '/master-data/exchange-rates', label: 'Exchange Rates' }],
   },

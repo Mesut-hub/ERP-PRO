@@ -7,7 +7,6 @@ import { JwtAccessPayload } from '../../common/types/auth.types';
 import { InventoryService } from './inventory.service';
 import { CreateStockMoveDto } from './dto/create-stock-move.dto';
 import { PostStockMoveDto } from './dto/post-stock-move.dto';
-import { Post as HttpPost } from '@nestjs/common';
 
 @Controller('inv')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
@@ -41,6 +40,7 @@ export class InventoryController {
   ) {
     return this.service.postMove(actor, id, dto.notes, dto.reason);
   }
+
   @Post('moves/:id/cancel')
   @RequirePermissions('inv.move.cancel')
   cancel(@CurrentUser() actor: JwtAccessPayload, @Param('id') id: string) {
@@ -57,5 +57,26 @@ export class InventoryController {
   @RequirePermissions('inv.onhand.read')
   onHand(@Query('warehouseId') warehouseId?: string, @Query('productId') productId?: string) {
     return this.service.getOnHand({ warehouseId, productId });
+  }
+
+  @Get('reports/stock-valuation')
+  @RequirePermissions('inv.onhand.read')
+  stockValuation(
+    @Query('asOf') asOf?: string,
+    @Query('warehouseId') warehouseId?: string,
+    @Query('productId') productId?: string,
+    @Query('groupBy') groupBy?: 'product' | 'warehouseProduct' | 'productWarehouse',
+  ) {
+    return this.service.stockValuation({ asOf, warehouseId, productId, groupBy });
+  }
+
+  @Get('reports/stock-valuation/layers')
+  @RequirePermissions('inv.onhand.read')
+  stockValuationLayers(
+    @Query('asOf') asOf?: string,
+    @Query('warehouseId') warehouseId?: string,
+    @Query('productId') productId?: string,
+  ) {
+    return this.service.stockValuationLayers({ asOf, warehouseId, productId });
   }
 }

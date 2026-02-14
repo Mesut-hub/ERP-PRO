@@ -67,7 +67,6 @@ export class InventoryService {
     if (!dto.lines || dto.lines.length === 0)
       throw new BadRequestException('At least one line is required');
 
-    // Validate warehouses exist if provided
     if (dto.fromWarehouseId) {
       const w = await this.prisma.warehouse.findUnique({ where: { id: dto.fromWarehouseId } });
       if (!w || !w.isActive) throw new BadRequestException('Invalid fromWarehouseId');
@@ -77,7 +76,6 @@ export class InventoryService {
       if (!w || !w.isActive) throw new BadRequestException('Invalid toWarehouseId');
     }
 
-    // Validate products/units exist and quantities > 0
     for (const l of dto.lines) {
       if (Number(l.quantity) <= 0) throw new BadRequestException('Line quantity must be > 0');
       const p = await this.prisma.product.findUnique({ where: { id: l.productId } });
@@ -149,6 +147,165 @@ export class InventoryService {
     }));
   }
 
+  async stockValuation(params: {
+    asOf?: string;
+    warehouseId?: string;
+    productId?: string;
+    groupBy?: 'product' | 'warehouseProduct' | 'productWarehouse';
+  }) {
+    const asOf = params.asOf ? new Date(`${params.asOf}T23:59:59.999Z`) : new Date();
+    if (Number.isNaN(asOf.getTime())) throw new BadRequestException('Invalid asOf');
+
+    const groupBy = params.groupBy ?? 'product';
+
+    const rows = await (this.prisma as any).$queryRaw<
+      Array<{
+        productId: string;
+        warehouseId: string;
+        qtyRemain: any;
+        unitCostBase: any;
+        receivedAt: Date;
+      }>
+    >`
+      SELECT
+        "productId",
+        "warehouseId",
+        "qtyRemain",
+        "unitCostBase",
+        "receivedAt"
+      FROM "InventoryFifoLayer"
+      WHERE "qtyRemain" > 0
+        AND "receivedAt" <= ${asOf}
+        AND (${params.warehouseId ?? null}::text IS NULL OR "warehouseId" = ${params.warehouseId})
+        AND (${params.productId ?? null}::text IS NULL OR "productId" = ${params.productId})
+    `;
+
+    type Agg = {
+      productId: string;
+      warehouseId: string | null;
+      qty: number;
+      value: number;
+    };
+
+    const agg = new Map<string, Agg>();
+
+    for (const r of rows) {
+      const qty = Number(r.qtyRemain ?? 0);
+      const unit = Number(r.unitCostBase ?? 0);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      if (!Number.isFinite(unit) || unit <= 0) continue;
+
+      const wh =
+        groupBy === 'product'
+          ? null
+          : r.warehouseId;
+
+      const key =
+        groupBy === 'product'
+          ? `${r.productId}`
+          : `${r.productId}::${r.warehouseId}`;
+
+      const cur = agg.get(key) ?? { productId: r.productId, warehouseId: wh, qty: 0, value: 0 };
+      cur.qty += qty;
+      cur.value += qty * unit;
+      agg.set(key, cur);
+    }
+
+    const items = Array.from(agg.values()).map((x) => {
+      const avg = x.qty > 0 ? x.value / x.qty : 0;
+      return {
+        productId: x.productId,
+        warehouseId: x.warehouseId,
+        qtyOnHand: x.qty.toFixed(4),
+        valuationBase: (Math.round((x.value + Number.EPSILON) * 100) / 100).toFixed(2),
+        avgCostBase: (Math.round((avg + Number.EPSILON) * 1000000) / 1000000).toFixed(6),
+        currencyCode: 'TRY' as const,
+      };
+    });
+
+    const productIds = [...new Set(items.map((i) => i.productId))];
+    const whIds = [...new Set(items.map((i) => i.warehouseId).filter(Boolean) as string[])];
+
+    const [products, warehouses] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, sku: true, name: true },
+      }),
+      this.prisma.warehouse.findMany({
+        where: { id: { in: whIds } },
+        select: { id: true, code: true, name: true },
+      }),
+    ]);
+
+    const pMap = new Map(products.map((p) => [p.id, p]));
+    const wMap = new Map(warehouses.map((w) => [w.id, w]));
+
+    const enriched = items
+      .map((i) => ({
+        ...i,
+        productCode: (pMap.get(i.productId) as any)?.sku ?? '',
+        productName: (pMap.get(i.productId) as any)?.name ?? '',
+        warehouseCode: i.warehouseId ? (wMap.get(i.warehouseId)?.code ?? '') : '',
+        warehouseName: i.warehouseId ? (wMap.get(i.warehouseId)?.name ?? '') : '',
+      }))
+      .sort((a, b) => {
+        // perfect professional sorting
+        if (groupBy === 'warehouseProduct') {
+          return (a.warehouseCode + a.productCode).localeCompare(b.warehouseCode + b.productCode);
+        }
+        if (groupBy === 'productWarehouse') {
+          return (a.productCode + a.warehouseCode).localeCompare(b.productCode + b.warehouseCode);
+        }
+        return a.productCode.localeCompare(b.productCode);
+      });
+
+    const totalValue = enriched.reduce((s, r) => s + Number(r.valuationBase), 0);
+
+    return {
+      ok: true,
+      asOf: asOf.toISOString(),
+      groupBy,
+      filters: {
+        warehouseId: params.warehouseId ?? null,
+        productId: params.productId ?? null,
+      },
+      totals: {
+        currencyCode: 'TRY',
+        valuationBase: totalValue.toFixed(2),
+        lines: enriched.length,
+      },
+      rows: enriched,
+    };
+  }
+
+  async stockValuationLayers(params: { asOf?: string; warehouseId?: string; productId?: string }) {
+    const asOf = params.asOf ? new Date(`${params.asOf}T23:59:59.999Z`) : new Date();
+    if (Number.isNaN(asOf.getTime())) throw new BadRequestException('Invalid asOf');
+
+    if (!params.productId && !params.warehouseId) {
+      throw new BadRequestException('Provide productId or warehouseId for layer drilldown');
+    }
+
+    const layers = await (this.prisma as any).inventoryFifoLayer.findMany({
+      where: {
+        productId: params.productId ?? undefined,
+        warehouseId: params.warehouseId ?? undefined,
+        receivedAt: { lte: asOf },
+        qtyRemain: { gt: '0' },
+      },
+      orderBy: [{ receivedAt: 'asc' }, { createdAt: 'asc' }],
+      take: 500,
+    });
+
+    return {
+      ok: true,
+      asOf: asOf.toISOString(),
+      filters: { warehouseId: params.warehouseId ?? null, productId: params.productId ?? null },
+      count: layers.length,
+      layers,
+    };
+  }
+
   private async assertSufficientStock(warehouseId: string, productId: string, requiredOut: number) {
     const allowNegative = (this.config.get<string>('ALLOW_NEGATIVE_STOCK') ?? 'false') === 'true';
     if (allowNegative) return;
@@ -186,7 +343,6 @@ export class InventoryService {
       move.toWarehouseId ?? undefined,
     );
 
-    // Validate stock availability for OUT movements (ISSUE, TRANSFER, ADJUSTMENT negative)
     if (move.type === 'ISSUE' || move.type === 'TRANSFER') {
       const fromId = move.fromWarehouseId!;
       for (const l of move.lines) {
@@ -200,7 +356,6 @@ export class InventoryService {
       }
     }
 
-    // Transaction: create ledger entries + mark POSTED
     const result = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.stockMove.findUnique({ where: { id } });
       if (!locked) throw new NotFoundException('StockMove not found');
@@ -325,7 +480,6 @@ export class InventoryService {
       throw new BadRequestException('Only POSTED moves can be reversed');
     }
 
-    // reversal uses opposite direction/warehouses depending on type
     let reversalType: StockMoveType = move.type;
     let fromWarehouseId: string | null = move.fromWarehouseId;
     let toWarehouseId: string | null = move.toWarehouseId;
