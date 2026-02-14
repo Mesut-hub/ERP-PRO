@@ -79,4 +79,14 @@ export class InventoryController {
   ) {
     return this.service.stockValuationLayers({ asOf, warehouseId, productId });
   }
+
+  @Get('reports/fifo-allocations')
+  @RequirePermissions('inv.onhand.read')
+  fifoAllocations(
+    @Query('issueSourceType') issueSourceType?: string,
+    @Query('issueSourceId') issueSourceId?: string,
+    @Query('issueSourceLineId') issueSourceLineId?: string,
+  ) {
+    return this.service.fifoAllocations({ issueSourceType, issueSourceId, issueSourceLineId });
+  }
 }

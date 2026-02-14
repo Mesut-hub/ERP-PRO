@@ -539,4 +539,94 @@ export class InventoryService {
 
     return created;
   }
+
+  async fifoAllocations(params: {
+    issueSourceType?: string;
+    issueSourceId?: string;
+    issueSourceLineId?: string;
+  }) {
+    const t = params.issueSourceType?.trim();
+    const id = params.issueSourceId?.trim();
+    const lineId = params.issueSourceLineId?.trim();
+
+    if (!t || !id) {
+      throw new BadRequestException('issueSourceType and issueSourceId are required');
+    }
+
+    const where: any = {
+      issueSourceType: t,
+      issueSourceId: id,
+    };
+    if (lineId) where.issueSourceLineId = lineId;
+
+    const rows = await (this.prisma as any).inventoryFifoAllocation.findMany({
+      where,
+      orderBy: [{ createdAt: 'asc' }],
+      include: {
+        layer: true, // contains currency audit fields after migration
+      },
+      take: 2000,
+    });
+
+    // Enrich with product/warehouse labels
+    const productIds = [...new Set(rows.map((r: any) => r.productId))];
+    const whIds = [...new Set(rows.map((r: any) => r.warehouseId))];
+
+    const [products, warehouses] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, sku: true, name: true },
+      }),
+      this.prisma.warehouse.findMany({
+        where: { id: { in: whIds } },
+        select: { id: true, code: true, name: true },
+      }),
+    ]);
+
+    const pMap = new Map(products.map((p) => [p.id, p]));
+    const wMap = new Map(warehouses.map((w) => [w.id, w]));
+
+    const mapped = rows.map((r: any) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      productId: r.productId,
+      productSku: (pMap.get(r.productId) as any)?.sku ?? '',
+      productName: (pMap.get(r.productId) as any)?.name ?? '',
+      warehouseId: r.warehouseId,
+      warehouseCode: wMap.get(r.warehouseId)?.code ?? '',
+      warehouseName: wMap.get(r.warehouseId)?.name ?? '',
+
+      issueSourceType: r.issueSourceType,
+      issueSourceId: r.issueSourceId,
+      issueSourceLineId: r.issueSourceLineId,
+
+      quantity: r.quantity,
+      unitCostBase: r.unitCostBase,
+      amountBase: r.amountBase,
+
+      layer: {
+        id: r.layer?.id,
+        receivedAt: r.layer?.receivedAt,
+        sourceType: r.layer?.sourceType,
+        sourceId: r.layer?.sourceId,
+        sourceLineId: r.layer?.sourceLineId,
+        qtyIn: r.layer?.qtyIn,
+        qtyRemain: r.layer?.qtyRemain,
+        unitCostBase: r.layer?.unitCostBase,
+
+        sourceCurrencyCode: r.layer?.sourceCurrencyCode ?? null,
+        unitCostTxn: r.layer?.unitCostTxn ?? null,
+        fxRateToTry: r.layer?.fxRateToTry ?? null,
+      },
+    }));
+
+    const total = mapped.reduce((s: number, x: any) => s + Number(x.amountBase ?? 0), 0);
+
+    return {
+      ok: true,
+      filters: { issueSourceType: t, issueSourceId: id, issueSourceLineId: lineId ?? null },
+      totals: { currencyCode: 'TRY', amountBase: total.toFixed(2), lines: mapped.length },
+      rows: mapped,
+    };
+  }
 }

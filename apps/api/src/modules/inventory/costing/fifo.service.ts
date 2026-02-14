@@ -23,12 +23,33 @@ export class FifoService {
       sourceLineId?: string | null;
       receivedAt: Date;
       qtyIn: number;
-      unitCostBase: number; // TRY
+
+      // valuation in base (TRY) - always required
+      unitCostBase: number;
+
+      // optional audit context for option (2)
+      sourceCurrencyCode?: string | null;
+      unitCostTxn?: number | null;
+      fxRateToTry?: number | null;
     },
   ) {
     if (args.qtyIn <= 0) throw new BadRequestException('qtyIn must be > 0');
     if (!Number.isFinite(args.unitCostBase) || args.unitCostBase <= 0)
       throw new BadRequestException('unitCostBase must be > 0');
+
+    const currency = args.sourceCurrencyCode?.toUpperCase().trim() || null;
+
+    if (currency) {
+      if (currency.length !== 3) throw new BadRequestException('sourceCurrencyCode must be 3 letters');
+      if (args.unitCostTxn !== null && args.unitCostTxn !== undefined) {
+        if (!Number.isFinite(args.unitCostTxn) || args.unitCostTxn <= 0)
+          throw new BadRequestException('unitCostTxn must be > 0');
+      }
+      if (args.fxRateToTry !== null && args.fxRateToTry !== undefined) {
+        if (!Number.isFinite(args.fxRateToTry) || args.fxRateToTry <= 0)
+          throw new BadRequestException('fxRateToTry must be > 0');
+      }
+    }
 
     return (tx as any).inventoryFifoLayer.create({
       data: {
@@ -40,6 +61,17 @@ export class FifoService {
         receivedAt: args.receivedAt,
         qtyIn: args.qtyIn.toFixed(4),
         qtyRemain: args.qtyIn.toFixed(4),
+
+        sourceCurrencyCode: currency,
+        unitCostTxn:
+          args.unitCostTxn === null || args.unitCostTxn === undefined
+            ? null
+            : args.unitCostTxn.toFixed(6),
+        fxRateToTry:
+          args.fxRateToTry === null || args.fxRateToTry === undefined
+            ? null
+            : args.fxRateToTry.toFixed(8),
+
         unitCostBase: args.unitCostBase.toFixed(6),
       },
     });

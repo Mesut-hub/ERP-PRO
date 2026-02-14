@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 
-type ViewMode = 'product' | 'warehouseProduct';
+type ViewMode = 'product' | 'productWarehouse' | 'warehouseProduct';
 
 type ValRow = {
   productId: string;
@@ -33,12 +33,24 @@ type LayerRow = {
   receivedAt: string;
   qtyIn: string;
   qtyRemain: string;
+
+  // NEW: audit fields (may be null for older rows)
+  sourceCurrencyCode?: string | null;
+  unitCostTxn?: string | number | null;
+  fxRateToTry?: string | number | null;
+
   unitCostBase: string;
   createdAt: string;
 };
 
 function ymdToday() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function fmtMaybe(n: any, digits: number) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '';
+  return x.toFixed(digits);
 }
 
 export default function StockValuationPage() {
@@ -97,8 +109,8 @@ export default function StockValuationPage() {
       sp.set('asOf', asOf);
       sp.set('productId', row.productId);
 
-      // If user filtered by warehouse, keep it; else drilldown returns all warehouses for that product.
-      if (warehouseId.trim()) sp.set('warehouseId', warehouseId.trim());
+      const wh = row.warehouseId ?? (warehouseId.trim() ? warehouseId.trim() : '');
+      if (wh) sp.set('warehouseId', wh);
 
       const res = await fetch(`/api/inv/reports/stock-valuation/layers?${sp.toString()}`);
       const body = await res.json().catch(() => null);
@@ -117,12 +129,14 @@ export default function StockValuationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const colSpan = view === 'product' ? 5 : 6;
+
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold">Stock Valuation (FIFO)</h1>
         <p className="text-sm text-muted-foreground">
-          View inventory value as-of a date. Use the toggle to switch between product totals and warehouse breakdown.
+          Professional valuation drill-path: Product totals → Product by warehouse → FIFO layers (audit-grade FX).
         </p>
       </div>
 
@@ -151,7 +165,7 @@ export default function StockValuationPage() {
 
           <div className="space-y-2">
             <Label>View</Label>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 variant={view === 'product' ? 'default' : 'outline'}
@@ -161,10 +175,17 @@ export default function StockValuationPage() {
               </Button>
               <Button
                 type="button"
+                variant={view === 'productWarehouse' ? 'default' : 'outline'}
+                onClick={() => setView('productWarehouse')}
+              >
+                Product → Warehouse
+              </Button>
+              <Button
+                type="button"
                 variant={view === 'warehouseProduct' ? 'default' : 'outline'}
                 onClick={() => setView('warehouseProduct')}
               >
-                By warehouse
+                Warehouse → Product
               </Button>
             </div>
           </div>
@@ -218,7 +239,7 @@ export default function StockValuationPage() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
-                    {view === 'warehouseProduct' && <th>Warehouse</th>}
+                    {view !== 'product' && <th>Warehouse</th>}
                     <th>Product</th>
                     <th className="text-right">Qty</th>
                     <th className="text-right">Avg cost (TRY)</th>
@@ -229,29 +250,36 @@ export default function StockValuationPage() {
                 <tbody className="[&>tr]:border-t [&>tr]:border-border">
                   {data.rows.length === 0 ? (
                     <tr>
-                      <td className="px-3 py-3 text-muted-foreground" colSpan={view === 'warehouseProduct' ? 6 : 5}>
+                      <td className="px-3 py-3 text-muted-foreground" colSpan={colSpan}>
                         No FIFO layers found for this filter/as-of date.
                       </td>
                     </tr>
                   ) : (
                     data.rows.map((r) => (
                       <tr
-                        key={view === 'warehouseProduct' ? `${r.warehouseId}:${r.productId}` : r.productId}
+                        key={
+                          view === 'product'
+                            ? r.productId
+                            : `${r.productId}:${r.warehouseId ?? ''}`
+                        }
                         className="[&>td]:px-3 [&>td]:py-2"
                       >
-                        {view === 'warehouseProduct' && (
+                        {view !== 'product' && (
                           <td className="min-w-[240px]">
                             <div className="font-medium">{r.warehouseCode} — {r.warehouseName}</div>
                             <div className="text-xs text-muted-foreground font-mono">{r.warehouseId}</div>
                           </td>
                         )}
+
                         <td className="min-w-[320px]">
                           <div className="font-medium">{r.productCode} — {r.productName}</div>
                           <div className="text-xs text-muted-foreground font-mono">{r.productId}</div>
                         </td>
+
                         <td className="text-right tabular-nums">{Number(r.qtyOnHand).toFixed(4)}</td>
                         <td className="text-right tabular-nums">{Number(r.avgCostBase).toFixed(6)}</td>
                         <td className="text-right tabular-nums">{Number(r.valuationBase).toFixed(2)}</td>
+
                         <td className="text-right">
                           <Button size="sm" variant="secondary" onClick={() => loadLayers(r)} disabled={layersLoading}>
                             Layers
@@ -264,14 +292,22 @@ export default function StockValuationPage() {
               </table>
             </div>
 
-            {/* Third view: product -> FIFO layers drilldown */}
             {selected && (
               <div className="mt-4">
                 <div className="text-sm font-medium">
                   FIFO layers for {selected.productCode} — {selected.productName}
+                  {selected.warehouseId ? (
+                    <span className="text-muted-foreground">
+                      {' '} (warehouse: {selected.warehouseCode || selected.warehouseId})
+                    </span>
+                  ) : null}
                 </div>
 
-                {layersError && <div className="mt-2"><Alert variant="destructive">{layersError}</Alert></div>}
+                {layersError && (
+                  <div className="mt-2">
+                    <Alert variant="destructive">{layersError}</Alert>
+                  </div>
+                )}
 
                 {layersLoading && (
                   <div className="mt-2 space-y-2">
@@ -288,14 +324,19 @@ export default function StockValuationPage() {
                           <th>Warehouse</th>
                           <th>Received</th>
                           <th className="text-right">Qty remain</th>
-                          <th className="text-right">Unit cost (TRY)</th>
+
+                          <th>CCY</th>
+                          <th className="text-right">Unit (CCY)</th>
+                          <th className="text-right">FX → TRY</th>
+
+                          <th className="text-right">Unit (TRY)</th>
                           <th>Source</th>
                         </tr>
                       </thead>
                       <tbody className="[&>tr]:border-t [&>tr]:border-border">
                         {layers.length === 0 ? (
                           <tr>
-                            <td className="px-3 py-3 text-muted-foreground" colSpan={5}>
+                            <td className="px-3 py-3 text-muted-foreground" colSpan={8}>
                               No remaining layers for this selection.
                             </td>
                           </tr>
@@ -307,6 +348,11 @@ export default function StockValuationPage() {
                                 {String(l.receivedAt).slice(0, 10)}
                               </td>
                               <td className="text-right tabular-nums">{Number(l.qtyRemain).toFixed(4)}</td>
+
+                              <td className="font-mono text-xs">{(l.sourceCurrencyCode ?? '').toString()}</td>
+                              <td className="text-right tabular-nums">{fmtMaybe(l.unitCostTxn, 6)}</td>
+                              <td className="text-right tabular-nums">{fmtMaybe(l.fxRateToTry, 8)}</td>
+
                               <td className="text-right tabular-nums">{Number(l.unitCostBase).toFixed(6)}</td>
                               <td className="text-xs font-mono">
                                 {l.sourceType}:{l.sourceId}{l.sourceLineId ? `:${l.sourceLineId}` : ''}

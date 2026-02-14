@@ -370,6 +370,12 @@ export class PurchasingService {
           sourceLineId: l.id,
           receivedAt: receipt.documentDate,
           qtyIn: qty,
+
+          // audit-grade option (2): txn currency -> TRY at posting date
+          sourceCurrencyCode: po.currencyCode,
+          unitCostTxn: netPoCurrency / qty,
+          fxRateToTry: rateToTry,
+
           unitCostBase: unitCostTry,
         });
 
