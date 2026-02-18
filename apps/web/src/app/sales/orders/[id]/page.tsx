@@ -16,9 +16,19 @@ type DeliverLine = {
   notes?: string;
 };
 
+type OnHandRow = {
+  productId: string;
+  warehouseId: string;
+  onHand: string; // fixed(4)
+};
+
 function n4(x: any) {
   const v = Number(x ?? 0);
   return Number.isFinite(v) ? v : 0;
+}
+
+function clampNonNeg(n: number) {
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
 }
 
 export default function SalesOrderDetailPage() {
@@ -28,6 +38,8 @@ export default function SalesOrderDetailPage() {
 
   const [so, setSo] = useState<any | null>(null);
   const [deliveredBySoLineId, setDeliveredBySoLineId] = useState<Record<string, string>>({});
+  const [onHandByProductId, setOnHandByProductId] = useState<Record<string, number>>({});
+
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<'approve' | 'deliver' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +53,7 @@ export default function SalesOrderDetailPage() {
     setError(null);
     setOk(null);
     setLoading(true);
+
     try {
       const [soRes, sumRes] = await Promise.all([
         fetch(`/api/sales/orders/${encodeURIComponent(id)}`),
@@ -57,17 +70,50 @@ export default function SalesOrderDetailPage() {
       setSo(soBody);
       setDeliveredBySoLineId(deliveredMap);
 
-      // Default deliver = remaining qty
+      // Load on-hand (per product) for the SO warehouse
+      const warehouseId = String(soBody?.warehouseId ?? '').trim();
+      const products: string[] = Array.isArray(soBody?.lines)
+        ? (soBody.lines
+            .map((l: any) => l?.productId)
+            .filter((x: any): x is string => typeof x === 'string' && x.length > 0))
+        : [];
+
+      const uniqProducts: string[] = Array.from(new Set(products));
+
+      const onHandMap: Record<string, number> = {};
+      if (warehouseId && uniqProducts.length > 0) {
+        // simple (fast to implement): one call per product
+        // If you later want performance: add batch endpoint.
+        const results = await Promise.all(
+          uniqProducts.map(async (pid) => {
+            const r = await fetch(
+              `/api/inv/onhand?warehouseId=${encodeURIComponent(warehouseId)}&productId=${encodeURIComponent(pid)}`,
+            );
+            const b = await r.json().catch(() => null);
+            if (!r.ok) return { pid, onHand: 0 };
+            const row: OnHandRow | undefined = Array.isArray(b) ? b[0] : undefined;
+            return { pid, onHand: n4(row?.onHand ?? 0) };
+          }),
+        );
+
+        for (const x of results) onHandMap[x.pid] = x.onHand;
+      }
+      setOnHandByProductId(onHandMap);
+
+      // Default deliver = min(remaining, onHand)
       const lines: any[] = Array.isArray(soBody?.lines) ? soBody.lines : [];
       setDeliverLines(
         lines.map((l) => {
           const ordered = n4(l.quantity);
           const delivered = n4(deliveredMap?.[l.id]);
-          const remaining = Math.max(0, ordered - delivered);
+          const remaining = clampNonNeg(ordered - delivered);
+
+          const onHand = onHandMap[String(l.productId)] ?? 0;
+          const suggest = Math.min(remaining, onHand);
 
           return {
             soLineId: l.id,
-            quantity: remaining.toFixed(4).replace(/\.?0+$/, ''), // nice string
+            quantity: suggest.toFixed(4).replace(/\.?0+$/, ''),
             notes: l.notes ?? undefined,
           };
         }),
@@ -75,6 +121,7 @@ export default function SalesOrderDetailPage() {
     } catch (e: any) {
       setSo(null);
       setDeliveredBySoLineId({});
+      setOnHandByProductId({});
       setError(e?.message ?? 'Failed to load sales order');
     } finally {
       setLoading(false);
@@ -124,7 +171,7 @@ export default function SalesOrderDetailPage() {
     setOk(null);
 
     if (!Array.isArray(deliverPayload.lines) || deliverPayload.lines.length === 0) {
-      setError('Nothing to deliver: all remaining quantities are 0.');
+      setError('Nothing to deliver: all suggested quantities are 0 (no remaining or no stock).');
       return;
     }
 
@@ -202,17 +249,29 @@ export default function SalesOrderDetailPage() {
               <CardDescription>Order metadata.</CardDescription>
             </CardHeader>
             <CardContent className="text-sm grid grid-cols-1 md:grid-cols-2 gap-2">
-              <div><span className="text-muted-foreground">Document No:</span> <span className="font-mono">{so.documentNo}</span></div>
-              <div><span className="text-muted-foreground">Status:</span> <span className="font-mono">{so.status}</span></div>
-              <div><span className="text-muted-foreground">Customer:</span> <span>{so.customer?.name ?? so.customerId}</span></div>
-              <div><span className="text-muted-foreground">Warehouse:</span> <span>{so.warehouse?.code ? `${so.warehouse.code} — ${so.warehouse.name}` : so.warehouseId}</span></div>
+              <div>
+                <span className="text-muted-foreground">Document No:</span>{' '}
+                <span className="font-mono">{so.documentNo}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Status:</span>{' '}
+                <span className="font-mono">{so.status}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Customer:</span>{' '}
+                <span>{so.customer?.name ?? so.customerId}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Warehouse:</span>{' '}
+                <span>{so.warehouse?.code ? `${so.warehouse.code} — ${so.warehouse.name}` : so.warehouseId}</span>
+              </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Lines (ordered vs delivered vs remaining)</CardTitle>
-              <CardDescription>This prevents over-delivery and matches ERP behavior.</CardDescription>
+              <CardTitle>Lines (remaining & stock-aware)</CardTitle>
+              <CardDescription>Defaults Deliver-now to min(remaining, on-hand).</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto rounded-md border border-border">
@@ -224,14 +283,21 @@ export default function SalesOrderDetailPage() {
                       <th className="text-right">Ordered</th>
                       <th className="text-right">Delivered</th>
                       <th className="text-right">Remaining</th>
+                      <th className="text-right">On hand</th>
                       <th className="text-right">Deliver now</th>
+                      <th />
                     </tr>
                   </thead>
                   <tbody className="[&>tr]:border-t [&>tr]:border-border">
                     {(so.lines ?? []).map((l: any, idx: number) => {
                       const ordered = n4(l.quantity);
                       const delivered = n4(deliveredBySoLineId?.[l.id]);
-                      const remaining = Math.max(0, ordered - delivered);
+                      const remaining = clampNonNeg(ordered - delivered);
+
+                      const onHand = onHandByProductId[String(l.productId)] ?? 0;
+                      const deliverNow = n4(deliverLines[idx]?.quantity);
+
+                      const insufficient = remaining > 1e-9 && onHand + 1e-9 < remaining;
 
                       return (
                         <tr key={l.id} className="[&>td]:px-3 [&>td]:py-2">
@@ -240,19 +306,30 @@ export default function SalesOrderDetailPage() {
                           <td className="text-right tabular-nums">{ordered.toFixed(4)}</td>
                           <td className="text-right tabular-nums">{delivered.toFixed(4)}</td>
                           <td className="text-right tabular-nums">{remaining.toFixed(4)}</td>
+                          <td className="text-right tabular-nums">{onHand.toFixed(4)}</td>
                           <td className="text-right">
                             <Input
                               className="w-[140px] ml-auto text-right"
                               value={deliverLines[idx]?.quantity ?? '0'}
                               onChange={(e) => updateDeliverLine(idx, { quantity: e.target.value })}
-                              disabled={remaining <= 1e-9}
+                              disabled={remaining <= 1e-9 || onHand <= 1e-9}
                             />
+                          </td>
+                          <td className="text-right text-xs">
+                            {insufficient ? <span className="text-destructive">Insufficient</span> : null}
+                            {remaining <= 1e-9 ? <span className="text-muted-foreground">Done</span> : null}
+                            {deliverNow > onHand + 1e-9 ? <span className="text-destructive">Too high</span> : null}
                           </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="mt-3 text-xs text-muted-foreground">
+                On-hand is from StockLedger (not “available-to-promise”). FIFO may still fail if layers are missing
+                even though on-hand is positive, but this eliminates most user errors.
               </div>
             </CardContent>
           </Card>

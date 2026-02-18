@@ -25,6 +25,8 @@ const nav = [
     items: [
       { href: '/sales/orders', label: 'Orders' },
       { href: '/sales/deliveries', label: 'Deliveries' },
+      { href: '/sales/returns', label: 'Returns' },
+      { href: '/sales/invoices', label: 'Invoices' },
     ],
   },
   {

@@ -151,4 +151,32 @@ export class SalesController {
   backfillDeliveryCost(@CurrentUser() actor: JwtAccessPayload, @Param('id') deliveryId: string) {
     return this.service.backfillDeliveryCostSnapshot(actor, deliveryId);
   }
+
+  @Get('returns')
+  @RequirePermissions('sales.order.read')
+  listReturns() {
+    return this.prisma.salesReturn.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { delivery: true, lines: true, warehouse: true },
+      take: 100,
+    });
+  }
+
+  @Get('returns/:id')
+  @RequirePermissions('sales.order.read')
+  getReturn(@Param('id') id: string) {
+    return this.prisma.salesReturn.findUnique({
+      where: { id },
+      include: { delivery: true, lines: true, warehouse: true, stockMove: true },
+    });
+  }
+
+  @Get('invoices/:id')
+  @RequirePermissions('sales.invoice.read')
+  getInvoice(@Param('id') id: string) {
+    return this.prisma.customerInvoice.findUnique({
+      where: { id },
+      include: { customer: true, currency: true, lines: true },
+    });
+  }
 }
