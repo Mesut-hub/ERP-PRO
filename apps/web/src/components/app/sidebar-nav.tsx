@@ -21,6 +21,13 @@ const nav = [
     ],
   },
   {
+    section: 'Sales',
+    items: [
+      { href: '/sales/orders', label: 'Orders' },
+      { href: '/sales/deliveries', label: 'Deliveries' },
+    ],
+  },
+  {
     section: 'Inventory',
     items: [{ href: '/inventory/stock-valuation', label: 'Stock Valuation' }],
   },

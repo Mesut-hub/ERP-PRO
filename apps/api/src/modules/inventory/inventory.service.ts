@@ -12,6 +12,10 @@ import { JwtAccessPayload } from '../../common/types/auth.types';
 import { AuditAction, StockMoveStatus, StockMoveType } from '@prisma/client';
 import { DocNoService } from '../common/sequence/docno.service';
 
+function isString(x: unknown): x is string {
+  return typeof x === 'string' && x.length > 0;
+}
+
 @Injectable()
 export class InventoryService {
   constructor(
@@ -559,7 +563,7 @@ export class InventoryService {
     };
     if (lineId) where.issueSourceLineId = lineId;
 
-    const rows = await (this.prisma as any).inventoryFifoAllocation.findMany({
+    const rows = await this.prisma.inventoryFifoAllocation.findMany({
       where,
       orderBy: [{ createdAt: 'asc' }],
       include: {
@@ -569,8 +573,8 @@ export class InventoryService {
     });
 
     // Enrich with product/warehouse labels
-    const productIds = [...new Set(rows.map((r: any) => r.productId))];
-    const whIds = [...new Set(rows.map((r: any) => r.warehouseId))];
+    const productIds = Array.from(new Set(rows.map((r) => r.productId)));
+    const whIds = Array.from(new Set(rows.map((r) => r.warehouseId)));
 
     const [products, warehouses] = await Promise.all([
       this.prisma.product.findMany({

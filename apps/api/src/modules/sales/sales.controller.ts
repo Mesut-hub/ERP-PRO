@@ -12,16 +12,36 @@ import { ApproveSalesOrderDto } from './dto/approve-sales-order.dto';
 import { PostingOverrideDto } from '../common/dto/posting-override.dto';
 import { CreateInvoiceNoteDto } from './dto/create-invoice-note.dto';
 import { CreateSalesReturnDto } from './dto/create-sales-return.dto';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Controller('sales')
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
 export class SalesController {
-  constructor(private readonly service: SalesService) {}
+  constructor(
+    private readonly service: SalesService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Get('orders')
   @RequirePermissions('sales.order.read')
   listOrders() {
     return this.service.listOrders();
+  }
+
+  @Get('orders/:id')
+  @RequirePermissions('sales.order.read')
+  async getOrder(@Param('id') id: string) {
+    // We fetch via prisma because SalesService is redacted here and we want predictable includes.
+    const so = await this.prisma.salesOrder.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        warehouse: true,
+        currency: true,
+        lines: true,
+      },
+    });
+    return so;
   }
 
   @Post('orders')
@@ -50,6 +70,27 @@ export class SalesController {
     return this.service.deliverOrder(actor, id, dto);
   }
 
+  @Get('orders/:id/delivery-summary')
+  @RequirePermissions('sales.order.read')
+  async deliverySummary(@Param('id') id: string) {
+    const rows = await this.prisma.salesDeliveryLine.groupBy({
+      by: ['soLineId'],
+      where: {
+        soLineId: { not: null },
+        delivery: { soId: id },
+      },
+      _sum: { quantity: true },
+    });
+
+    const deliveredBySoLineId: Record<string, string> = {};
+    for (const r of rows) {
+      if (!r.soLineId) continue;
+      deliveredBySoLineId[r.soLineId] = String(r._sum.quantity ?? '0');
+    }
+
+    return { ok: true, soId: id, deliveredBySoLineId };
+  }
+
   @Get('invoices')
   @RequirePermissions('sales.invoice.read')
   listInvoices() {
@@ -76,6 +117,16 @@ export class SalesController {
   @RequirePermissions('sales.invoice.manage')
   createInvoiceNote(@CurrentUser() actor: JwtAccessPayload, @Body() dto: CreateInvoiceNoteDto) {
     return this.service.createInvoiceNote(actor, dto);
+  }
+
+  @Get('deliveries')
+  @RequirePermissions('sales.order.read')
+  listDeliveries() {
+    return this.prisma.salesDelivery.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { warehouse: true, lines: true },
+      take: 100,
+    });
   }
 
   @Get('deliveries/:id')

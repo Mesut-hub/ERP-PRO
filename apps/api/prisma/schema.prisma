@@ -744,12 +744,14 @@ model SalesDeliveryLine {
   notes      String?
   lineCost   Decimal?      @db.Decimal(18, 2)
   unitCost   Decimal?      @db.Decimal(18, 6)
+  soLineId   String?
   delivery   SalesDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
   product    Product       @relation(fields: [productId], references: [id])
   unit       Unit          @relation(fields: [unitId], references: [id])
 
   @@index([deliveryId])
   @@index([productId])
+  @@index([soLineId])
 }
 
 model CustomerInvoice {

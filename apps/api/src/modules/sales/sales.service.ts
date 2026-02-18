@@ -263,24 +263,33 @@ export class SalesService {
     const soLineById = new Map(so.lines.map((l) => [l.id, l]));
 
     const deliveredAgg = await this.prisma.salesDeliveryLine.groupBy({
-      by: ['productId'],
-      where: { delivery: { soId } },
+      by: ['soLineId'],
+      where: {
+        soLineId: { not: null },
+        delivery: { soId },
+      },
       _sum: { quantity: true },
     });
 
-    const deliveredByProduct = new Map<string, number>();
-    for (const d of deliveredAgg) deliveredByProduct.set(d.productId, Number(d._sum.quantity ?? 0));
+    const deliveredBySoLineId = new Map<string, number>();
+    for (const d of deliveredAgg) {
+      if (!d.soLineId) continue;
+      deliveredBySoLineId.set(d.soLineId, Number(d._sum.quantity ?? 0));
+    }
 
     for (const dl of dto.lines) {
       const soLine = soLineById.get(dl.soLineId);
       if (!soLine) throw new BadRequestException('Invalid soLineId');
 
-      const already = deliveredByProduct.get(soLine.productId) ?? 0;
+      const already = deliveredBySoLineId.get(dl.soLineId) ?? 0;
       const newQty = Number(dl.quantity);
 
       if (newQty <= 0) throw new BadRequestException('Delivery quantity must be > 0');
+
       if (already + newQty > Number(soLine.quantity) + 1e-9) {
-        throw new BadRequestException('Delivering exceeds ordered quantity');
+        throw new BadRequestException(
+          `Delivering exceeds ordered quantity for soLineId=${dl.soLineId}`,
+        );
       }
     }
 
@@ -299,6 +308,7 @@ export class SalesService {
           create: dto.lines.map((dl: any) => {
             const soLine = soLineById.get(dl.soLineId)!;
             return {
+              soLineId: dl.soLineId,
               productId: soLine.productId,
               unitId: soLine.unitId,
               quantity: dl.quantity,
