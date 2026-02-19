@@ -91,6 +91,31 @@ export class SalesController {
     return { ok: true, soId: id, deliveredBySoLineId };
   }
 
+  @Get('orders/:id/invoice-summary')
+  @RequirePermissions('sales.order.read')
+  async invoiceSummary(@Param('id') id: string) {
+    // Sum only POSTED invoices to prevent counting drafts
+    const rows = await this.prisma.customerInvoiceLine.groupBy({
+      by: ['soLineId'],
+      where: {
+        soLineId: { not: null },
+        invoice: {
+          status: 'POSTED',
+          soId: id,
+        },
+      },
+      _sum: { quantity: true },
+    });
+
+    const invoicedBySoLineId: Record<string, string> = {};
+    for (const r of rows) {
+      if (!r.soLineId) continue;
+      invoicedBySoLineId[r.soLineId] = String(r._sum.quantity ?? '0');
+    }
+
+    return { ok: true, soId: id, invoicedBySoLineId };
+  }
+
   @Get('invoices')
   @RequirePermissions('sales.invoice.read')
   listInvoices() {

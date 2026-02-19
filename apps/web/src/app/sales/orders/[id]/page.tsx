@@ -22,6 +22,15 @@ type OnHandRow = {
   onHand: string; // fixed(4)
 };
 
+type InvoiceLineDraft = {
+  productId: string | null;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  vatCode: string;
+  soLineId: string;
+};
+
 function n4(x: any) {
   const v = Number(x ?? 0);
   return Number.isFinite(v) ? v : 0;
@@ -41,13 +50,16 @@ export default function SalesOrderDetailPage() {
   const [onHandByProductId, setOnHandByProductId] = useState<Record<string, number>>({});
 
   const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState<'approve' | 'deliver' | null>(null);
+  const [busy, setBusy] = useState<'approve' | 'deliver' | 'invoice' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
   const [approveReason, setApproveReason] = useState('Approved in ERP');
   const [deliverNotes, setDeliverNotes] = useState('Delivered from ERP');
   const [deliverLines, setDeliverLines] = useState<DeliverLine[]>([]);
+
+  const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([]);
+  const [invoiceNotes, setInvoiceNotes] = useState('');
 
   async function load() {
     setError(null);
@@ -70,21 +82,19 @@ export default function SalesOrderDetailPage() {
       setSo(soBody);
       setDeliveredBySoLineId(deliveredMap);
 
-      // Load on-hand (per product) for the SO warehouse
+      // On-hand
       const warehouseId = String(soBody?.warehouseId ?? '').trim();
       const products: string[] = Array.isArray(soBody?.lines)
-        ? (soBody.lines
+        ? soBody.lines
             .map((l: any) => l?.productId)
-            .filter((x: any): x is string => typeof x === 'string' && x.length > 0))
+            .filter((x: any): x is string => typeof x === 'string' && x.length > 0)
         : [];
 
       const uniqProducts: string[] = Array.from(new Set(products));
-
       const onHandMap: Record<string, number> = {};
+
       if (warehouseId && uniqProducts.length > 0) {
-        // simple (fast to implement): one call per product
-        // If you later want performance: add batch endpoint.
-        const results = await Promise.all(
+        const results: Array<{ pid: string; onHand: number }> = await Promise.all(
           uniqProducts.map(async (pid) => {
             const r = await fetch(
               `/api/inv/onhand?warehouseId=${encodeURIComponent(warehouseId)}&productId=${encodeURIComponent(pid)}`,
@@ -100,7 +110,7 @@ export default function SalesOrderDetailPage() {
       }
       setOnHandByProductId(onHandMap);
 
-      // Default deliver = min(remaining, onHand)
+      // default deliver lines = min(remaining, onhand)
       const lines: any[] = Array.isArray(soBody?.lines) ? soBody.lines : [];
       setDeliverLines(
         lines.map((l) => {
@@ -118,10 +128,26 @@ export default function SalesOrderDetailPage() {
           };
         }),
       );
+
+      // default invoice lines = full SO lines
+      setInvoiceLines(
+        lines.map((l) => {
+          const deliveredQty = n4(deliveredMap?.[l.id]); // delivery-summary is keyed by soLineId
+          return {
+            productId: l.productId ?? null,
+            description: `SO ${soBody.documentNo} - ${l.productId}`,
+            quantity: deliveredQty.toFixed(4).replace(/\.?0+$/, ''),
+            unitPrice: String(l.unitPrice ?? '0'),
+            vatCode: String(l.vatCode ?? 'KDV_20'),
+            soLineId: l.soLineId,
+          };
+        }),
+      );
     } catch (e: any) {
       setSo(null);
       setDeliveredBySoLineId({});
       setOnHandByProductId({});
+      setInvoiceLines([]);
       setError(e?.message ?? 'Failed to load sales order');
     } finally {
       setLoading(false);
@@ -198,6 +224,70 @@ export default function SalesOrderDetailPage() {
       await load();
     } catch (e: any) {
       setError(e?.message ?? 'Deliver failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function updateInvoiceLine(idx: number, patch: Partial<InvoiceLineDraft>) {
+    setInvoiceLines((prev) => prev.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
+  }
+
+  async function createInvoice() {
+    setError(null);
+    setOk(null);
+
+    if (!so) {
+      setError('Sales order not loaded.');
+      return;
+    }
+
+    const lines = invoiceLines
+      .map((l) => ({
+        productId: l.productId,
+        description: l.description,
+        quantity: String(l.quantity ?? '').trim(),
+        unitPrice: String(l.unitPrice ?? '').trim(),
+        vatCode: String(l.vatCode ?? '').trim(),
+      }))
+      .filter((l) => Number(l.quantity) > 0);
+
+    if (lines.length === 0) {
+      setError('Invoice must have at least one line with quantity > 0.');
+      return;
+    }
+
+    setBusy('invoice');
+    try {
+      const res = await fetch('/api/sales/invoices/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerId: so.customerId,
+          soId: so.id,
+          currencyCode: so.currencyCode,
+          exchangeRateToBase: so.exchangeRateToBase ?? null,
+          notes: invoiceNotes || undefined,
+          lines,
+        }),
+      });
+
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.message ?? 'Failed to create invoice');
+
+      const invoiceId = body?.id ?? null;
+      const docNo = body?.documentNo ?? '';
+      setOk(`Invoice created ${docNo}. Opening…`);
+
+      if (invoiceId) {
+        router.push(`/sales/invoices/${invoiceId}`);
+        router.refresh();
+        return;
+      }
+
+      await load();
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to create invoice');
     } finally {
       setBusy(null);
     }
@@ -328,8 +418,8 @@ export default function SalesOrderDetailPage() {
               </div>
 
               <div className="mt-3 text-xs text-muted-foreground">
-                On-hand is from StockLedger (not “available-to-promise”). FIFO may still fail if layers are missing
-                even though on-hand is positive, but this eliminates most user errors.
+                On-hand is from StockLedger (not “available-to-promise”). FIFO may still fail if layers are missing even
+                though on-hand is positive, but this eliminates most user errors.
               </div>
             </CardContent>
           </Card>
@@ -355,6 +445,65 @@ export default function SalesOrderDetailPage() {
                   {busy === 'deliver' ? 'Delivering…' : 'Deliver'}
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* NEW: Create Invoice */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Create Invoice</CardTitle>
+              <CardDescription>Create a draft customer invoice from this Sales Order.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2">
+                <Label>Invoice notes (optional)</Label>
+                <Input value={invoiceNotes} onChange={(e) => setInvoiceNotes(e.target.value)} />
+              </div>
+
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
+                      <th>Product</th>
+                      <th className="text-right">Qty</th>
+                      <th className="text-right">Unit price</th>
+                      <th>VAT</th>
+                    </tr>
+                  </thead>
+                  <tbody className="[&>tr]:border-t [&>tr]:border-border">
+                    {invoiceLines.map((l, idx) => (
+                      <tr key={`${l.productId ?? 'none'}:${idx}`} className="[&>td]:px-3 [&>td]:py-2">
+                        <td className="font-mono text-xs">{l.productId ?? ''}</td>
+                        <td className="text-right">
+                          <Input
+                            className="w-[140px] ml-auto text-right"
+                            value={l.quantity}
+                            onChange={(e) => updateInvoiceLine(idx, { quantity: e.target.value })}
+                          />
+                        </td>
+                        <td className="text-right">
+                          <Input
+                            className="w-[160px] ml-auto text-right"
+                            value={l.unitPrice}
+                            onChange={(e) => updateInvoiceLine(idx, { unitPrice: e.target.value })}
+                          />
+                        </td>
+                        <td>
+                          <Input
+                            className="w-[120px]"
+                            value={l.vatCode}
+                            onChange={(e) => updateInvoiceLine(idx, { vatCode: e.target.value })}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <Button onClick={createInvoice} disabled={busy !== null}>
+                {busy === 'invoice' ? 'Creating…' : 'Create Draft Invoice'}
+              </Button>
             </CardContent>
           </Card>
         </>

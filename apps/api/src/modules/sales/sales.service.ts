@@ -807,6 +807,7 @@ export class SalesService {
         quantity: l.quantity,
         unitPrice: l.unitPrice,
         vatCode: l.vatCode,
+        soLineId: l.soLineId ?? null,
         lineSubtotal: lineSubtotal.toFixed(2),
         lineVat: lineVat.toFixed(2),
         lineTotal: lineTotal.toFixed(2),

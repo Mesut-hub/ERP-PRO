@@ -802,11 +802,13 @@ model CustomerInvoiceLine {
   lineSubtotal Decimal         @db.Decimal(18, 2)
   lineVat      Decimal         @db.Decimal(18, 2)
   lineTotal    Decimal         @db.Decimal(18, 2)
+  soLineId     String?
   invoice      CustomerInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product      Product?        @relation(fields: [productId], references: [id])
   vatRate      VatRate         @relation(fields: [vatCode], references: [code])
 
   @@index([invoiceId])
+  @@index([soLineId])
 }
 
 model Payment {

@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 type AllocationRow = {
   id: string;
@@ -37,18 +39,33 @@ function sumMoney(xs: Array<number>) {
   return Math.round((total + Number.EPSILON) * 100) / 100;
 }
 
+function n4(x: any) {
+  const v = Number(x ?? 0);
+  return Number.isFinite(v) ? v : 0;
+}
+
 export default function SalesDeliveryPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const deliveryId = params.id;
 
   const [delivery, setDelivery] = useState<any | null>(null);
   const [alloc, setAlloc] = useState<{ totals: any; rows: AllocationRow[] } | null>(null);
 
   const [loading, setLoading] = useState(false);
+  const [busyReturn, setBusyReturn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+
+  const [returnReason, setReturnReason] = useState('Customer return');
+  const [returnNotes, setReturnNotes] = useState('');
+  const [returnQtyByDeliveryLineId, setReturnQtyByDeliveryLineId] = useState<Record<string, string>>(
+    {},
+  );
 
   async function load() {
     setError(null);
+    setOk(null);
     setLoading(true);
     try {
       const [dRes, aRes] = await Promise.all([
@@ -68,6 +85,12 @@ export default function SalesDeliveryPage() {
 
       setDelivery(dBody);
       setAlloc({ totals: aBody?.totals, rows: aBody?.rows ?? [] });
+
+      // initialize return qty map (default 0)
+      const lines: any[] = Array.isArray(dBody?.lines) ? dBody.lines : [];
+      const init: Record<string, string> = {};
+      for (const l of lines) init[l.id] = init[l.id] ?? '0';
+      setReturnQtyByDeliveryLineId((prev) => ({ ...init, ...prev }));
     } catch (e: any) {
       setDelivery(null);
       setAlloc(null);
@@ -93,10 +116,60 @@ export default function SalesDeliveryPage() {
   }, [alloc]);
 
   const diff = useMemo(() => {
-    return Math.round(((deliveryCost - allocCost) + Number.EPSILON) * 100) / 100;
+    return Math.round((deliveryCost - allocCost + Number.EPSILON) * 100) / 100;
   }, [deliveryCost, allocCost]);
 
   const match = Math.abs(diff) <= 0.01;
+
+  async function createReturn() {
+    setError(null);
+    setOk(null);
+
+    const lines: any[] = Array.isArray(delivery?.lines) ? delivery.lines : [];
+    const payloadLines = lines
+      .map((l) => ({
+        deliveryLineId: l.id,
+        quantity: String(returnQtyByDeliveryLineId[l.id] ?? '0').trim(),
+        notes: undefined,
+      }))
+      .filter((x) => n4(x.quantity) > 0);
+
+    if (payloadLines.length === 0) {
+      setError('Nothing to return. Enter a quantity > 0 for at least one delivery line.');
+      return;
+    }
+
+    setBusyReturn(true);
+    try {
+      const res = await fetch(`/api/sales/deliveries/${encodeURIComponent(deliveryId)}/return`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason: returnReason,
+          notes: returnNotes || undefined,
+          lines: payloadLines,
+        }),
+      });
+
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.message ?? 'Failed to create return');
+
+      const salesReturnId = body?.salesReturnId ?? body?.id ?? null;
+      setOk(`Return created. ${salesReturnId ? `Opening ${salesReturnId}…` : ''}`);
+
+      if (salesReturnId) {
+        router.push(`/sales/returns/${salesReturnId}`);
+        router.refresh();
+        return;
+      }
+
+      await load();
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to create return');
+    } finally {
+      setBusyReturn(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -105,12 +178,13 @@ export default function SalesDeliveryPage() {
           <h1 className="text-xl font-semibold">Delivery</h1>
           <p className="text-sm text-muted-foreground">Delivery details and FIFO COGS audit.</p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}>
+        <Button variant="outline" onClick={load} disabled={loading || busyReturn}>
           Refresh
         </Button>
       </div>
 
       {error && <Alert variant="destructive">{error}</Alert>}
+      {ok && <Alert>{ok}</Alert>}
 
       {loading && (
         <Card>
@@ -206,6 +280,63 @@ export default function SalesDeliveryPage() {
         </Card>
       )}
 
+      {/* NEW: Return creation */}
+      {!loading && delivery?.lines && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Create Return</CardTitle>
+            <CardDescription>Create a sales return against this delivery.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Reason</Label>
+                <Input value={returnReason} onChange={(e) => setReturnReason(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Notes (optional)</Label>
+                <Input value={returnNotes} onChange={(e) => setReturnNotes(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
+                    <th>Delivery line</th>
+                    <th>Product</th>
+                    <th className="text-right">Delivered</th>
+                    <th className="text-right">Return qty</th>
+                  </tr>
+                </thead>
+                <tbody className="[&>tr]:border-t [&>tr]:border-border">
+                  {delivery.lines.map((l: any) => (
+                    <tr key={l.id} className="[&>td]:px-3 [&>td]:py-2">
+                      <td className="font-mono text-xs">{l.id}</td>
+                      <td className="font-mono text-xs">{l.productId}</td>
+                      <td className="text-right tabular-nums">{Number(l.quantity ?? 0).toFixed(4)}</td>
+                      <td className="text-right">
+                        <Input
+                          className="w-[140px] ml-auto text-right"
+                          value={returnQtyByDeliveryLineId[l.id] ?? '0'}
+                          onChange={(e) =>
+                            setReturnQtyByDeliveryLineId((prev) => ({ ...prev, [l.id]: e.target.value }))
+                          }
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <Button onClick={createReturn} disabled={busyReturn}>
+              {busyReturn ? 'Creating…' : 'Create Return'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {!loading && alloc && (
         <Card>
           <CardHeader>
@@ -245,7 +376,9 @@ export default function SalesDeliveryPage() {
                     alloc.rows.map((r) => (
                       <tr key={r.id} className="[&>td]:px-3 [&>td]:py-2">
                         <td>
-                          <div className="font-medium">{r.productSku} — {r.productName}</div>
+                          <div className="font-medium">
+                            {r.productSku} — {r.productName}
+                          </div>
                           <div className="text-xs text-muted-foreground font-mono">{r.productId}</div>
                         </td>
                         <td className="text-right tabular-nums">{Number(r.quantity ?? 0).toFixed(4)}</td>
@@ -270,10 +403,9 @@ export default function SalesDeliveryPage() {
 
             {!match && (
               <div className="mt-3 text-xs text-muted-foreground">
-                A mismatch usually means delivery line cost snapshot is missing/outdated. Use “backfill cost” on the API
-                ({' '}
-                <code>/sales/deliveries/:id/backfill-cost</code> ) or ensure delivery posting writes unitCost/lineCost
-                from FIFO allocations.
+                A mismatch usually means delivery line cost snapshot is missing/outdated. Use “backfill cost” on the API (
+                <code>/sales/deliveries/:id/backfill-cost</code>) or ensure delivery posting writes unitCost/lineCost from
+                FIFO allocations.
               </div>
             )}
           </CardContent>
