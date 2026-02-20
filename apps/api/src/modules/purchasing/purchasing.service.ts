@@ -397,8 +397,11 @@ export class PurchasingService {
     });
 
     // --- Accounting: GRNI accrual at receipt time ---
-    const net = this.sumReceiptNet(receipt.lines);
-    if (net > 0) {
+    // Compute net in document currency and base TRY
+    const netDoc = this.sumReceiptNet(receipt.lines);
+    if (netDoc > 0) {
+      const netBase = netDoc * rateToTry;
+
       const accInv = await this.getAccountByCode('150');
       const accGrni = await this.getAccountByCode('327');
 
@@ -412,19 +415,19 @@ export class PurchasingService {
             accountId: accInv.id,
             partyId: po.supplierId,
             description: `GRN ${receipt.documentNo} Inventory receipt`,
-            debit: net.toFixed(2),
+            debit: netBase.toFixed(2),
             credit: '0',
             currencyCode: po.currencyCode,
-            amountCurrency: net.toFixed(2),
+            amountCurrency: netDoc.toFixed(2),
           },
           {
             accountId: accGrni.id,
             partyId: po.supplierId,
             description: `GRN ${receipt.documentNo} GRNI accrual`,
             debit: '0',
-            credit: net.toFixed(2),
+            credit: netBase.toFixed(2),
             currencyCode: po.currencyCode,
-            amountCurrency: net.toFixed(2),
+            amountCurrency: netDoc.toFixed(2),
           },
         ],
       });
@@ -434,7 +437,7 @@ export class PurchasingService {
         action: AuditAction.POST,
         entity: 'PurchaseReceipt',
         entityId: receipt.id,
-        after: { journalEntryId: je.id, net: net.toFixed(2) },
+        after: { journalEntryId: je.id, netDoc: netDoc.toFixed(2), netBase: netBase.toFixed(2) },
         message: `Posted GRNI for receipt ${receipt.documentNo} with JE ${je.documentNo}`,
       });
     }
@@ -831,6 +834,22 @@ export class PurchasingService {
     return this.fx.getRate(cur, 'TRY', postingDate);
   }
 
+  private async getRateToTryForInvoice(inv: any): Promise<number> {
+    const cur = inv.currencyCode.toUpperCase();
+    if (cur === 'TRY') return 1;
+
+    // If invoice has an explicit exchangeRateToBase, use it
+    if (inv.exchangeRateToBase !== null && inv.exchangeRateToBase !== undefined) {
+      const r = Number(inv.exchangeRateToBase);
+      if (!Number.isFinite(r) || r <= 0)
+        throw new BadRequestException('Invalid exchangeRateToBase on invoice');
+      return r;
+    }
+
+    // Otherwise pull CBRT daily rate via ExchangeRate table (Istanbul day)
+    return this.fx.getRate(cur, 'TRY', inv.documentDate);
+  }
+
   async createSupplierInvoice(actorId: string, dto: any) {
     if (!dto.lines || dto.lines.length === 0)
       throw new BadRequestException('Invoice must have lines');
@@ -1095,9 +1114,18 @@ export class PurchasingService {
       overrideReason,
     );
 
-    const net = inv.lines.reduce((s, l) => s + Number(l.lineSubtotal), 0);
-    const vat = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
-    const total = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
+    // Document currency amounts
+    const netDoc = inv.lines.reduce((s, l) => s + Number(l.lineSubtotal), 0);
+    const vatDoc = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
+    const totalDoc = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
+
+    // Determine FX rate to TRY for this invoice
+    const rateToTry = await this.getRateToTryForInvoice(inv);
+
+    // Base TRY amounts
+    const net = netDoc * rateToTry;
+    const vat = vatDoc * rateToTry;
+    const total = totalDoc * rateToTry;
 
     const accAP = await this.getAccountByCode('320');
     const accVatIn = await this.getAccountByCode('191');
@@ -1121,7 +1149,7 @@ export class PurchasingService {
           debit: net.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
@@ -1130,7 +1158,7 @@ export class PurchasingService {
           debit: vat.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accAP.id,
@@ -1139,7 +1167,7 @@ export class PurchasingService {
           debit: '0',
           credit: total.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
       } else {
         // CREDIT_NOTE: Dr AP, Cr GRNI, Cr VAT
@@ -1150,7 +1178,7 @@ export class PurchasingService {
           debit: total.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accGrni.id,
@@ -1159,7 +1187,7 @@ export class PurchasingService {
           debit: '0',
           credit: net.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
@@ -1168,7 +1196,7 @@ export class PurchasingService {
           debit: '0',
           credit: vat.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
       }
     } else {
@@ -1181,7 +1209,7 @@ export class PurchasingService {
           debit: net.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
@@ -1190,7 +1218,7 @@ export class PurchasingService {
           debit: vat.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accAP.id,
@@ -1199,7 +1227,7 @@ export class PurchasingService {
           debit: '0',
           credit: total.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
       } else {
         journalLines.push({
@@ -1209,7 +1237,7 @@ export class PurchasingService {
           debit: total.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accExp.id,
@@ -1218,7 +1246,7 @@ export class PurchasingService {
           debit: '0',
           credit: net.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
@@ -1227,7 +1255,7 @@ export class PurchasingService {
           debit: '0',
           credit: vat.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
       }
     }
