@@ -397,10 +397,13 @@ export class PurchasingService {
     });
 
     // --- Accounting: GRNI accrual at receipt time ---
-    const net = this.sumReceiptNet(receipt.lines);
-    if (net > 0) {
+    const netDoc = this.sumReceiptNet(receipt.lines);
+    if (netDoc > 0) {
       const accInv = await this.getAccountByCode('150');
       const accGrni = await this.getAccountByCode('327');
+
+      // Convert document currency to base TRY for debit/credit
+      const netBaseTry = netDoc * rateToTry;
 
       const je = await this.accounting.createPostedFromIntegration(actor.sub, {
         documentDate: receipt.documentDate,
@@ -412,19 +415,19 @@ export class PurchasingService {
             accountId: accInv.id,
             partyId: po.supplierId,
             description: `GRN ${receipt.documentNo} Inventory receipt`,
-            debit: net.toFixed(2),
+            debit: netBaseTry.toFixed(2),
             credit: '0',
             currencyCode: po.currencyCode,
-            amountCurrency: net.toFixed(2),
+            amountCurrency: netDoc.toFixed(2),
           },
           {
             accountId: accGrni.id,
             partyId: po.supplierId,
             description: `GRN ${receipt.documentNo} GRNI accrual`,
             debit: '0',
-            credit: net.toFixed(2),
+            credit: netBaseTry.toFixed(2),
             currencyCode: po.currencyCode,
-            amountCurrency: net.toFixed(2),
+            amountCurrency: netDoc.toFixed(2),
           },
         ],
       });
@@ -434,7 +437,7 @@ export class PurchasingService {
         action: AuditAction.POST,
         entity: 'PurchaseReceipt',
         entityId: receipt.id,
-        after: { journalEntryId: je.id, net: net.toFixed(2) },
+        after: { journalEntryId: je.id, net: netDoc.toFixed(2) },
         message: `Posted GRNI for receipt ${receipt.documentNo} with JE ${je.documentNo}`,
       });
     }
@@ -1095,9 +1098,29 @@ export class PurchasingService {
       overrideReason,
     );
 
-    const net = inv.lines.reduce((s, l) => s + Number(l.lineSubtotal), 0);
-    const vat = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
-    const total = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
+    // Calculate amounts in document currency
+    const netDoc = inv.lines.reduce((s, l) => s + Number(l.lineSubtotal), 0);
+    const vatDoc = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
+    const totalDoc = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
+
+    // Determine exchange rate to TRY for invoice posting
+    let rateToTry = 1;
+    const invCurrency = inv.currencyCode.toUpperCase();
+    if (invCurrency !== 'TRY') {
+      if (inv.exchangeRateToBase !== null && inv.exchangeRateToBase !== undefined) {
+        const r = Number(inv.exchangeRateToBase);
+        if (!Number.isFinite(r) || r <= 0)
+          throw new BadRequestException('Invalid exchangeRateToBase on invoice');
+        rateToTry = r;
+      } else {
+        rateToTry = await this.fx.getRate(invCurrency, 'TRY', inv.documentDate);
+      }
+    }
+
+    // Convert to base TRY for debit/credit
+    const netBase = netDoc * rateToTry;
+    const vatBase = vatDoc * rateToTry;
+    const totalBase = totalDoc * rateToTry;
 
     const accAP = await this.getAccountByCode('320');
     const accVatIn = await this.getAccountByCode('191');
@@ -1118,28 +1141,28 @@ export class PurchasingService {
           accountId: accGrni.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} GRNI clearing`,
-          debit: net.toFixed(2),
+          debit: netBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
-          debit: vat.toFixed(2),
+          debit: vatBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accAP.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP`,
           debit: '0',
-          credit: total.toFixed(2),
+          credit: totalBase.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
       } else {
         // CREDIT_NOTE: Dr AP, Cr GRNI, Cr VAT
@@ -1147,28 +1170,28 @@ export class PurchasingService {
           accountId: accAP.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP reversal`,
-          debit: total.toFixed(2),
+          debit: totalBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accGrni.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} GRNI reversal`,
           debit: '0',
-          credit: net.toFixed(2),
+          credit: netBase.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} VAT reversal`,
           debit: '0',
-          credit: vat.toFixed(2),
+          credit: vatBase.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
       }
     } else {
@@ -1178,56 +1201,56 @@ export class PurchasingService {
           accountId: accExp.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Expense`,
-          debit: net.toFixed(2),
+          debit: netBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
-          debit: vat.toFixed(2),
+          debit: vatBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accAP.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP`,
           debit: '0',
-          credit: total.toFixed(2),
+          credit: totalBase.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
       } else {
         journalLines.push({
           accountId: accAP.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP reversal`,
-          debit: total.toFixed(2),
+          debit: totalBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
-          amountCurrency: total.toFixed(2),
+          amountCurrency: totalDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accExp.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Expense reversal`,
           debit: '0',
-          credit: net.toFixed(2),
+          credit: netBase.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: net.toFixed(2),
+          amountCurrency: netDoc.toFixed(2),
         });
         journalLines.push({
           accountId: accVatIn.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} VAT reversal`,
           debit: '0',
-          credit: vat.toFixed(2),
+          credit: vatBase.toFixed(2),
           currencyCode: inv.currencyCode,
-          amountCurrency: vat.toFixed(2),
+          amountCurrency: vatDoc.toFixed(2),
         });
       }
     }
