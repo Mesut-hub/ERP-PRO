@@ -18,6 +18,16 @@ export class DeliverSalesOrderDto {
   @IsString()
   notes?: string;
 
+  // NEW: optional explicit document date (ISO string or yyyy-mm-dd)
+  @IsOptional()
+  @IsString()
+  documentDate?: string;
+
+  // NEW: optional posting lock override reason (only used if lock requires it)
+  @IsOptional()
+  @IsString()
+  overrideReason?: string;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => DeliverLineDto)

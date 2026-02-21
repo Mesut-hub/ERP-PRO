@@ -23,12 +23,12 @@ type OnHandRow = {
 };
 
 type InvoiceLineDraft = {
+  soLineId: string; // ✅ linkage key
   productId: string | null;
   description: string;
   quantity: string;
   unitPrice: string;
   vatCode: string;
-  soLineId: string;
 };
 
 function n4(x: any) {
@@ -40,13 +40,19 @@ function clampNonNeg(n: number) {
   return Number.isFinite(n) ? Math.max(0, n) : 0;
 }
 
+function fmtQtyStr(n: number) {
+  return n.toFixed(4).replace(/\.?0+$/, '');
+}
+
 export default function SalesOrderDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = params.id;
 
   const [so, setSo] = useState<any | null>(null);
+
   const [deliveredBySoLineId, setDeliveredBySoLineId] = useState<Record<string, string>>({});
+  const [invoicedBySoLineId, setInvoicedBySoLineId] = useState<Record<string, string>>({});
   const [onHandByProductId, setOnHandByProductId] = useState<Record<string, number>>({});
 
   const [loading, setLoading] = useState(false);
@@ -58,8 +64,13 @@ export default function SalesOrderDetailPage() {
   const [deliverNotes, setDeliverNotes] = useState('Delivered from ERP');
   const [deliverLines, setDeliverLines] = useState<DeliverLine[]>([]);
 
-  const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([]);
   const [invoiceNotes, setInvoiceNotes] = useState('');
+  const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([]);
+
+  const [deliveryDocumentDate, setDeliveryDocumentDate] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  );
+  const [deliveryOverrideReason, setDeliveryOverrideReason] = useState('');
 
   async function load() {
     setError(null);
@@ -67,32 +78,38 @@ export default function SalesOrderDetailPage() {
     setLoading(true);
 
     try {
-      const [soRes, sumRes] = await Promise.all([
+      const [soRes, delRes, invRes] = await Promise.all([
         fetch(`/api/sales/orders/${encodeURIComponent(id)}`),
         fetch(`/api/sales/orders/${encodeURIComponent(id)}/delivery-summary`),
+        fetch(`/api/sales/orders/${encodeURIComponent(id)}/invoice-summary`),
       ]);
 
       const soBody = await soRes.json().catch(() => null);
       if (!soRes.ok) throw new Error(soBody?.message ?? 'Failed to load sales order');
 
-      const sumBody = await sumRes.json().catch(() => null);
-      if (!sumRes.ok) throw new Error(sumBody?.message ?? 'Failed to load delivery summary');
+      const delBody = await delRes.json().catch(() => null);
+      if (!delRes.ok) throw new Error(delBody?.message ?? 'Failed to load delivery summary');
 
-      const deliveredMap: Record<string, string> = sumBody?.deliveredBySoLineId ?? {};
+      const invBody = await invRes.json().catch(() => null);
+      if (!invRes.ok) throw new Error(invBody?.message ?? 'Failed to load invoice summary');
+
+      const deliveredMap: Record<string, string> = delBody?.deliveredBySoLineId ?? {};
+      const invoicedMap: Record<string, string> = invBody?.invoicedBySoLineId ?? {};
+
       setSo(soBody);
       setDeliveredBySoLineId(deliveredMap);
+      setInvoicedBySoLineId(invoicedMap);
 
-      // On-hand
+      // ---- On-hand (per product) for the SO warehouse ----
       const warehouseId = String(soBody?.warehouseId ?? '').trim();
       const products: string[] = Array.isArray(soBody?.lines)
         ? soBody.lines
             .map((l: any) => l?.productId)
             .filter((x: any): x is string => typeof x === 'string' && x.length > 0)
         : [];
-
       const uniqProducts: string[] = Array.from(new Set(products));
-      const onHandMap: Record<string, number> = {};
 
+      const onHandMap: Record<string, number> = {};
       if (warehouseId && uniqProducts.length > 0) {
         const results: Array<{ pid: string; onHand: number }> = await Promise.all(
           uniqProducts.map(async (pid) => {
@@ -105,13 +122,13 @@ export default function SalesOrderDetailPage() {
             return { pid, onHand: n4(row?.onHand ?? 0) };
           }),
         );
-
         for (const x of results) onHandMap[x.pid] = x.onHand;
       }
       setOnHandByProductId(onHandMap);
 
-      // default deliver lines = min(remaining, onhand)
       const lines: any[] = Array.isArray(soBody?.lines) ? soBody.lines : [];
+
+      // ---- Default Deliver lines = min(remaining, onHand) ----
       setDeliverLines(
         lines.map((l) => {
           const ordered = n4(l.quantity);
@@ -123,30 +140,36 @@ export default function SalesOrderDetailPage() {
 
           return {
             soLineId: l.id,
-            quantity: suggest.toFixed(4).replace(/\.?0+$/, ''),
+            quantity: fmtQtyStr(suggest),
             notes: l.notes ?? undefined,
           };
         }),
       );
 
-      // default invoice lines = full SO lines
+      // ---- Default Invoice lines = invoiceable = delivered - invoiced ----
+      // Keep the line even if invoiceable is 0 (user can edit).
       setInvoiceLines(
         lines.map((l) => {
-          const deliveredQty = n4(deliveredMap?.[l.id]); // delivery-summary is keyed by soLineId
+          const delivered = n4(deliveredMap?.[l.id]);
+          const invoiced = n4(invoicedMap?.[l.id]);
+          const invoiceable = clampNonNeg(delivered - invoiced);
+
           return {
+            soLineId: l.id,
             productId: l.productId ?? null,
             description: `SO ${soBody.documentNo} - ${l.productId}`,
-            quantity: deliveredQty.toFixed(4).replace(/\.?0+$/, ''),
+            quantity: fmtQtyStr(invoiceable), // can be "0"
             unitPrice: String(l.unitPrice ?? '0'),
             vatCode: String(l.vatCode ?? 'KDV_20'),
-            soLineId: l.soLineId,
           };
         }),
       );
     } catch (e: any) {
       setSo(null);
       setDeliveredBySoLineId({});
+      setInvoicedBySoLineId({});
       setOnHandByProductId({});
+      setDeliverLines([]);
       setInvoiceLines([]);
       setError(e?.message ?? 'Failed to load sales order');
     } finally {
@@ -182,6 +205,8 @@ export default function SalesOrderDetailPage() {
   const deliverPayload = useMemo(() => {
     return {
       notes: deliverNotes,
+      documentDate: deliveryDocumentDate,
+      overrideReason: deliveryOverrideReason || undefined,
       lines: deliverLines
         .map((l) => ({
           soLineId: String(l.soLineId),
@@ -244,6 +269,7 @@ export default function SalesOrderDetailPage() {
 
     const lines = invoiceLines
       .map((l) => ({
+        soLineId: l.soLineId, // ✅ linkage persisted to API + DB
         productId: l.productId,
         description: l.description,
         quantity: String(l.quantity ?? '').trim(),
@@ -448,11 +474,12 @@ export default function SalesOrderDetailPage() {
             </CardContent>
           </Card>
 
-          {/* NEW: Create Invoice */}
           <Card>
             <CardHeader>
               <CardTitle>Create Invoice</CardTitle>
-              <CardDescription>Create a draft customer invoice from this Sales Order.</CardDescription>
+              <CardDescription>
+                Default quantity is <code>delivered − posted invoiced</code> per SO line. Lines remain editable.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-2">
@@ -464,39 +491,53 @@ export default function SalesOrderDetailPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
                     <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
+                      <th>SO Line</th>
                       <th>Product</th>
+                      <th className="text-right">Delivered</th>
+                      <th className="text-right">Invoiced (posted)</th>
+                      <th className="text-right">Invoiceable</th>
                       <th className="text-right">Qty</th>
                       <th className="text-right">Unit price</th>
                       <th>VAT</th>
                     </tr>
                   </thead>
                   <tbody className="[&>tr]:border-t [&>tr]:border-border">
-                    {invoiceLines.map((l, idx) => (
-                      <tr key={`${l.productId ?? 'none'}:${idx}`} className="[&>td]:px-3 [&>td]:py-2">
-                        <td className="font-mono text-xs">{l.productId ?? ''}</td>
-                        <td className="text-right">
-                          <Input
-                            className="w-[140px] ml-auto text-right"
-                            value={l.quantity}
-                            onChange={(e) => updateInvoiceLine(idx, { quantity: e.target.value })}
-                          />
-                        </td>
-                        <td className="text-right">
-                          <Input
-                            className="w-[160px] ml-auto text-right"
-                            value={l.unitPrice}
-                            onChange={(e) => updateInvoiceLine(idx, { unitPrice: e.target.value })}
-                          />
-                        </td>
-                        <td>
-                          <Input
-                            className="w-[120px]"
-                            value={l.vatCode}
-                            onChange={(e) => updateInvoiceLine(idx, { vatCode: e.target.value })}
-                          />
-                        </td>
-                      </tr>
-                    ))}
+                    {invoiceLines.map((l, idx) => {
+                      const delivered = n4(deliveredBySoLineId?.[l.soLineId]);
+                      const invoiced = n4(invoicedBySoLineId?.[l.soLineId]);
+                      const invoiceable = clampNonNeg(delivered - invoiced);
+
+                      return (
+                        <tr key={`${l.soLineId}:${idx}`} className="[&>td]:px-3 [&>td]:py-2">
+                          <td className="font-mono text-xs">{l.soLineId}</td>
+                          <td className="font-mono text-xs">{l.productId ?? ''}</td>
+                          <td className="text-right tabular-nums">{delivered.toFixed(4)}</td>
+                          <td className="text-right tabular-nums">{invoiced.toFixed(4)}</td>
+                          <td className="text-right tabular-nums">{invoiceable.toFixed(4)}</td>
+                          <td className="text-right">
+                            <Input
+                              className="w-[120px] ml-auto text-right"
+                              value={l.quantity}
+                              onChange={(e) => updateInvoiceLine(idx, { quantity: e.target.value })}
+                            />
+                          </td>
+                          <td className="text-right">
+                            <Input
+                              className="w-[140px] ml-auto text-right"
+                              value={l.unitPrice}
+                              onChange={(e) => updateInvoiceLine(idx, { unitPrice: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <Input
+                              className="w-[120px]"
+                              value={l.vatCode}
+                              onChange={(e) => updateInvoiceLine(idx, { vatCode: e.target.value })}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

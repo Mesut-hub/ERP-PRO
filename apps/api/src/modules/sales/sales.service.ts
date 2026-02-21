@@ -260,6 +260,19 @@ export class SalesService {
     if (!dto.lines || dto.lines.length === 0)
       throw new BadRequestException('Delivery must have lines');
 
+    // NEW: posting lock enforcement (blocks delivery posting in closed periods)
+    const docDate = dto.documentDate ? new Date(dto.documentDate) : new Date();
+    if (!Number.isFinite(docDate.getTime())) {
+      throw new BadRequestException('Invalid documentDate');
+    }
+
+    await this.postingLock.assertPostingAllowed(
+      actor,
+      docDate,
+      `Sales.deliverOrder soId=${soId}`,
+      dto.overrideReason,
+    );
+    
     const soLineById = new Map(so.lines.map((l) => [l.id, l]));
 
     const deliveredAgg = await this.prisma.salesDeliveryLine.groupBy({
@@ -293,13 +306,13 @@ export class SalesService {
       }
     }
 
-    const now = new Date();
-    const delNo = await this.docNo.allocate('DEL', now);
+    //const now = new Date();
+    const delNo = await this.docNo.allocate('DEL', docDate);
 
     const delivery = await this.prisma.salesDelivery.create({
       data: {
         documentNo: delNo,
-        documentDate: now,
+        documentDate: docDate,
         soId,
         warehouseId: so.warehouseId,
         notes: dto.notes,
@@ -324,7 +337,7 @@ export class SalesService {
     const move = await this.inventory.createMove(actor.sub, {
       type: StockMoveType.ISSUE,
       fromWarehouseId: so.warehouseId,
-      documentDate: now.toISOString(),
+      documentDate: docDate.toISOString(),
       notes: `Delivery for SO ${so.documentNo} (${delivery.documentNo})`,
       lines: delivery.lines.map((l) => ({
         productId: l.productId,
@@ -775,9 +788,79 @@ export class SalesService {
       if (!so) throw new BadRequestException('Invalid soId');
     }
 
+    // ✅ If invoice is linked to a Sales Order, enforce invoiceable quantities per soLineId.
+    // invoiceable = deliveredQty(soLineId) - postedInvoicedQty(soLineId)
+    let deliveredBySoLineId = new Map<string, number>();
+    let postedInvoicedBySoLineId = new Map<string, number>();
+
+    if (dto.soId) {
+      const deliveredAgg = await this.prisma.salesDeliveryLine.groupBy({
+        by: ['soLineId'],
+        where: {
+          soLineId: { not: null },
+          delivery: { soId: dto.soId },
+        },
+        _sum: { quantity: true },
+      });
+
+      deliveredBySoLineId = new Map(
+        deliveredAgg
+          .filter((r) => r.soLineId)
+          .map((r) => [r.soLineId as string, Number(r._sum.quantity ?? 0)]),
+      );
+
+      const invoicedAgg = await this.prisma.customerInvoiceLine.groupBy({
+        by: ['soLineId'],
+        where: {
+          soLineId: { not: null },
+          invoice: {
+            status: CustomerInvoiceStatus.POSTED,
+            soId: dto.soId,
+          },
+        },
+        _sum: { quantity: true },
+      });
+
+      postedInvoicedBySoLineId = new Map(
+        invoicedAgg
+          .filter((r) => r.soLineId)
+          .map((r) => [r.soLineId as string, Number(r._sum.quantity ?? 0)]),
+      );
+    }
+
     for (const l of dto.lines) {
       if (Number(l.quantity) <= 0) throw new BadRequestException('Line quantity must be > 0');
       if (Number(l.unitPrice) < 0) throw new BadRequestException('Line unitPrice must be >= 0');
+
+      if (dto.soId && l.soLineId) {
+        const sol = await this.prisma.salesOrderLine.findUnique({
+          where: { id: String(l.soLineId) },
+          select: { id: true, soId: true },
+        });
+        if (!sol || sol.soId !== dto.soId) {
+          throw new BadRequestException('Invalid soLineId for given soId');
+        }
+      }
+
+      // ✅ NEW: enforce invoiceable qty when linked to SO line
+      if (dto.soId && l.soLineId) {
+        const soLineId = String(l.soLineId);
+        const requested = Number(l.quantity);
+
+        const delivered = deliveredBySoLineId.get(soLineId) ?? 0;
+        const alreadyInvoiced = postedInvoicedBySoLineId.get(soLineId) ?? 0;
+
+        const invoiceable = delivered - alreadyInvoiced;
+
+        if (requested > invoiceable + 1e-9) {
+          throw new BadRequestException(
+            `Invoice line exceeds invoiceable quantity for soLineId=${soLineId}. ` +
+              `Delivered=${delivered.toFixed(4)} Invoiced(POSTED)=${alreadyInvoiced.toFixed(4)} ` +
+              `Invoiceable=${invoiceable.toFixed(4)} Requested=${requested.toFixed(4)}`,
+          );
+        }
+      }
+      
       if (l.productId) {
         const p = await this.prisma.product.findUnique({ where: { id: l.productId } });
         if (!p) throw new BadRequestException('Invalid productId');

@@ -27,6 +27,10 @@ class CreateCustomerInvoiceLineDto {
 
   @IsEnum(VatRateCode)
   vatCode!: VatRateCode;
+
+  @IsOptional()
+  @IsString()
+  soLineId?: string;
 }
 
 export class CreateCustomerInvoiceDto {
