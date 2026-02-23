@@ -11,6 +11,7 @@ import { PostingLockService } from '../finance/posting-lock.service';
 import { JwtAccessPayload } from '../../common/types/auth.types';
 import { AuditAction, StockMoveStatus, StockMoveType } from '@prisma/client';
 import { DocNoService } from '../common/sequence/docno.service';
+import { FifoService } from './costing/fifo.service';
 
 function isString(x: unknown): x is string {
   return typeof x === 'string' && x.length > 0;
@@ -24,6 +25,7 @@ export class InventoryService {
     private readonly config: ConfigService,
     private readonly postingLock: PostingLockService,
     private readonly docNo: DocNoService,
+    private readonly fifo: FifoService,
   ) {}
 
   async listMoves() {
@@ -108,6 +110,11 @@ export class InventoryService {
             notes: l.notes,
             lotNo: l.lotNo,
             serialNo: l.serialNo,
+
+            sourceCurrencyCode: l.sourceCurrencyCode ?? null,
+            unitCostTxn: l.unitCostTxn ?? null,
+            fxRateToTry: l.fxRateToTry ?? null,
+            unitCostBase: l.unitCostBase ?? null,
           })),
         },
       },

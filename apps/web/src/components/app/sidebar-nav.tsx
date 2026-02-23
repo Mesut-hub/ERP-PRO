@@ -27,11 +27,15 @@ const nav = [
       { href: '/sales/deliveries', label: 'Deliveries' },
       { href: '/sales/returns', label: 'Returns' },
       { href: '/sales/invoices', label: 'Invoices' },
+      { href: '/sales/invoices/new', label: 'New Invoice' },
     ],
   },
   {
     section: 'Inventory',
-    items: [{ href: '/inventory/stock-valuation', label: 'Stock Valuation' }],
+    items: [
+      { href: '/inventory/moves', label: 'Stock Moves' },
+      { href: '/inventory/stock-valuation', label: 'Stock Valuation' }
+    ],
   },
   {
     section: 'Master Data',

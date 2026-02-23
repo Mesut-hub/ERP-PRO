@@ -32,6 +32,22 @@ class CreateStockMoveLineDto {
   @IsOptional()
   @IsString()
   serialNo?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceCurrencyCode?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  unitCostTxn?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  fxRateToTry?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  unitCostBase?: string;
 }
 
 export class CreateStockMoveDto {

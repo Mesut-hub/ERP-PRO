@@ -467,6 +467,22 @@ export default function SalesOrderDetailPage() {
               <div className="space-y-2">
                 <Label>Delivery notes</Label>
                 <Input value={deliverNotes} onChange={(e) => setDeliverNotes(e.target.value)} />
+
+                {/* ✅ NEW: posting lock inputs */}
+                <Label>Delivery document date</Label>
+                <Input
+                  type="date"
+                  value={deliveryDocumentDate}
+                  onChange={(e) => setDeliveryDocumentDate(e.target.value)}
+                />
+
+                <Label>Posting lock override reason (optional)</Label>
+                <Input
+                  value={deliveryOverrideReason}
+                  onChange={(e) => setDeliveryOverrideReason(e.target.value)}
+                  placeholder="Required only if posting is locked (min 15 chars, and needs fin.posting.override)"
+                />
+
                 <Button onClick={deliver} disabled={busy !== null}>
                   {busy === 'deliver' ? 'Delivering…' : 'Deliver'}
                 </Button>
