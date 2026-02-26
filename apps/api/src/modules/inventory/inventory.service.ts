@@ -17,6 +17,11 @@ function isString(x: unknown): x is string {
   return typeof x === 'string' && x.length > 0;
 }
 
+function numOrNaN(x: any) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : Number.NaN;
+}
+
 @Injectable()
 export class InventoryService {
   constructor(
@@ -82,12 +87,38 @@ export class InventoryService {
       if (!w || !w.isActive) throw new BadRequestException('Invalid toWarehouseId');
     }
 
+    const isInboundValued =
+      dto.type === 'RECEIPT' || (dto.type === 'ADJUSTMENT' && !!dto.toWarehouseId);
+
     for (const l of dto.lines) {
       if (Number(l.quantity) <= 0) throw new BadRequestException('Line quantity must be > 0');
+
       const p = await this.prisma.product.findUnique({ where: { id: l.productId } });
       if (!p || !p.isActive) throw new BadRequestException('Invalid productId');
+
       const u = await this.prisma.unit.findUnique({ where: { id: l.unitId } });
       if (!u) throw new BadRequestException('Invalid unitId');
+
+      // ✅ Professional rule set: inbound valued moves must carry unitCostBase (>0)
+      if (isInboundValued) {
+        const unitCostBase = numOrNaN(l.unitCostBase);
+        if (!Number.isFinite(unitCostBase) || unitCostBase <= 0) {
+          throw new BadRequestException('Inbound move lines require unitCostBase > 0');
+        }
+
+        const ccy = isString(l.sourceCurrencyCode) ? String(l.sourceCurrencyCode).toUpperCase().trim() : '';
+        if (ccy) {
+          if (ccy.length !== 3) throw new BadRequestException('sourceCurrencyCode must be 3 letters');
+          const unitCostTxn = numOrNaN(l.unitCostTxn);
+          const fx = numOrNaN(l.fxRateToTry);
+          if (!Number.isFinite(unitCostTxn) || unitCostTxn <= 0) {
+            throw new BadRequestException('unitCostTxn must be > 0 when sourceCurrencyCode is provided');
+          }
+          if (!Number.isFinite(fx) || fx <= 0) {
+            throw new BadRequestException('fxRateToTry must be > 0 when sourceCurrencyCode is provided');
+          }
+        }
+      }
     }
 
     const docNo = await this.docNo.allocate('MOV', documentDate);
@@ -206,15 +237,9 @@ export class InventoryService {
       if (!Number.isFinite(qty) || qty <= 0) continue;
       if (!Number.isFinite(unit) || unit <= 0) continue;
 
-      const wh =
-        groupBy === 'product'
-          ? null
-          : r.warehouseId;
+      const wh = groupBy === 'product' ? null : r.warehouseId;
 
-      const key =
-        groupBy === 'product'
-          ? `${r.productId}`
-          : `${r.productId}::${r.warehouseId}`;
+      const key = groupBy === 'product' ? `${r.productId}` : `${r.productId}::${r.warehouseId}`;
 
       const cur = agg.get(key) ?? { productId: r.productId, warehouseId: wh, qty: 0, value: 0 };
       cur.qty += qty;
@@ -260,7 +285,6 @@ export class InventoryService {
         warehouseName: i.warehouseId ? (wMap.get(i.warehouseId)?.name ?? '') : '',
       }))
       .sort((a, b) => {
-        // perfect professional sorting
         if (groupBy === 'warehouseProduct') {
           return (a.warehouseCode + a.productCode).localeCompare(b.warehouseCode + b.productCode);
         }
@@ -368,59 +392,62 @@ export class InventoryService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const locked = await tx.stockMove.findUnique({ where: { id } });
+      const locked = await tx.stockMove.findUnique({
+        where: { id },
+        include: { lines: true },
+      });
       if (!locked) throw new NotFoundException('StockMove not found');
       if (locked.status !== StockMoveStatus.DRAFT)
         throw new BadRequestException('Move already posted/canceled');
 
       const ledgerCreates: any[] = [];
 
-      for (const l of move.lines) {
-        if (move.type === 'RECEIPT') {
+      for (const l of locked.lines) {
+        if (locked.type === 'RECEIPT') {
           ledgerCreates.push({
             moveId: id,
             productId: l.productId,
-            warehouseId: move.toWarehouseId!,
+            warehouseId: locked.toWarehouseId!,
             quantityIn: l.quantity,
             quantityOut: '0',
           });
-        } else if (move.type === 'ISSUE') {
+        } else if (locked.type === 'ISSUE') {
           ledgerCreates.push({
             moveId: id,
             productId: l.productId,
-            warehouseId: move.fromWarehouseId!,
+            warehouseId: locked.fromWarehouseId!,
             quantityIn: '0',
             quantityOut: l.quantity,
           });
-        } else if (move.type === 'TRANSFER') {
+        } else if (locked.type === 'TRANSFER') {
           ledgerCreates.push({
             moveId: id,
             productId: l.productId,
-            warehouseId: move.fromWarehouseId!,
+            warehouseId: locked.fromWarehouseId!,
             quantityIn: '0',
             quantityOut: l.quantity,
           });
           ledgerCreates.push({
             moveId: id,
             productId: l.productId,
-            warehouseId: move.toWarehouseId!,
+            warehouseId: locked.toWarehouseId!,
             quantityIn: l.quantity,
             quantityOut: '0',
           });
-        } else if (move.type === 'ADJUSTMENT') {
-          if (move.toWarehouseId) {
+        } else if (locked.type === 'ADJUSTMENT') {
+          if (locked.toWarehouseId) {
             ledgerCreates.push({
               moveId: id,
               productId: l.productId,
-              warehouseId: move.toWarehouseId,
+              warehouseId: locked.toWarehouseId,
               quantityIn: l.quantity,
               quantityOut: '0',
             });
-          } else if (move.fromWarehouseId) {
+          } else if (locked.fromWarehouseId) {
             ledgerCreates.push({
               moveId: id,
               productId: l.productId,
-              warehouseId: move.fromWarehouseId,
+              warehouseId: locked.fromWarehouseId,
               quantityIn: '0',
               quantityOut: l.quantity,
             });
@@ -430,13 +457,46 @@ export class InventoryService {
 
       await tx.stockLedgerEntry.createMany({ data: ledgerCreates });
 
+      // ✅ EXACT PLACE: after ledger entries are created, before move is marked POSTED
+      // Create FIFO inbound layers for valued inbound moves.
+      if (locked.type === 'RECEIPT' || (locked.type === 'ADJUSTMENT' && locked.toWarehouseId)) {
+        const inboundWarehouseId = locked.toWarehouseId!;
+
+        for (const l of locked.lines as any[]) {
+          const qtyIn = Number(l.quantity);
+          if (!Number.isFinite(qtyIn) || qtyIn <= 0) continue;
+
+          const unitCostBase = Number(l.unitCostBase ?? 0);
+          if (!Number.isFinite(unitCostBase) || unitCostBase <= 0) {
+            throw new BadRequestException(
+              `Missing unitCostBase for inbound move line ${l.id}. Provide unit cost before posting.`,
+            );
+          }
+
+          await this.fifo.createInboundLayer(tx as any, {
+            productId: l.productId,
+            warehouseId: inboundWarehouseId,
+            sourceType: 'StockMove',
+            sourceId: locked.id,
+            sourceLineId: l.id,
+            receivedAt: locked.documentDate,
+            qtyIn,
+            unitCostBase,
+
+            sourceCurrencyCode: l.sourceCurrencyCode ?? null,
+            unitCostTxn: l.unitCostTxn === null || l.unitCostTxn === undefined ? null : Number(l.unitCostTxn),
+            fxRateToTry: l.fxRateToTry === null || l.fxRateToTry === undefined ? null : Number(l.fxRateToTry),
+          });
+        }
+      }
+
       const updated = await tx.stockMove.update({
         where: { id },
         data: {
           status: StockMoveStatus.POSTED,
           postedAt: new Date(),
           postedById: actor.sub,
-          notes: notes ?? move.notes,
+          notes: notes ?? locked.notes,
         },
       });
 
@@ -574,12 +634,11 @@ export class InventoryService {
       where,
       orderBy: [{ createdAt: 'asc' }],
       include: {
-        layer: true, // contains currency audit fields after migration
+        layer: true,
       },
       take: 2000,
     });
 
-    // Enrich with product/warehouse labels
     const productIds = Array.from(new Set(rows.map((r) => r.productId)));
     const whIds = Array.from(new Set(rows.map((r) => r.warehouseId)));
 

@@ -50,7 +50,7 @@ export default function StockMoveDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           notes: postNotes || undefined,
-          reason: overrideReason || undefined, // posting lock override reason
+          reason: overrideReason || undefined,
         }),
       });
       const body = await res.json().catch(() => null);
@@ -175,7 +175,7 @@ export default function StockMoveDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>Lines</CardTitle>
-              <CardDescription>Products and quantities.</CardDescription>
+              <CardDescription>Products, quantities, and inbound valuation (if provided).</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto rounded-md border border-border">
@@ -185,6 +185,10 @@ export default function StockMoveDetailPage() {
                       <th>Product</th>
                       <th>Unit</th>
                       <th className="text-right">Qty</th>
+                      <th>CCY</th>
+                      <th className="text-right">Unit (CCY)</th>
+                      <th className="text-right">FX→TRY</th>
+                      <th className="text-right">Unit (TRY)</th>
                       <th>Notes</th>
                     </tr>
                   </thead>
@@ -194,6 +198,16 @@ export default function StockMoveDetailPage() {
                         <td className="font-mono text-xs">{l.productId}</td>
                         <td className="font-mono text-xs">{l.unitId}</td>
                         <td className="text-right tabular-nums">{Number(l.quantity ?? 0).toFixed(4)}</td>
+                        <td className="font-mono text-xs">{l.sourceCurrencyCode ?? ''}</td>
+                        <td className="text-right tabular-nums">
+                          {l.unitCostTxn !== null && l.unitCostTxn !== undefined ? Number(l.unitCostTxn).toFixed(6) : ''}
+                        </td>
+                        <td className="text-right tabular-nums">
+                          {l.fxRateToTry !== null && l.fxRateToTry !== undefined ? Number(l.fxRateToTry).toFixed(8) : ''}
+                        </td>
+                        <td className="text-right tabular-nums">
+                          {l.unitCostBase !== null && l.unitCostBase !== undefined ? Number(l.unitCostBase).toFixed(6) : ''}
+                        </td>
                         <td className="text-xs">{l.notes ?? ''}</td>
                       </tr>
                     ))}

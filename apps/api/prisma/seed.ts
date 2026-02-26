@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
@@ -297,8 +298,14 @@ async function main() {
 
     { code: '391', name: 'VAT Payable (KDV)', type: 'LIABILITY' as const },
 
+    { code: '501', name: 'Inventory Receipt Clearing', type: 'LIABILITY' as const },
+
     { code: '600', name: 'Sales Revenue', type: 'REVENUE' as const },
     { code: '621', name: 'Cost of Goods Sold (COGS)', type: 'EXPENSE' as const },
+
+    { code: '679', name: 'Inventory Adjustment Gain', type: 'REVENUE' as const },
+    { code: '689', name: 'Inventory Adjustment Loss', type: 'EXPENSE' as const },
+    
     { code: '770', name: 'General Administrative Expenses', type: 'EXPENSE' as const },
   ];
 

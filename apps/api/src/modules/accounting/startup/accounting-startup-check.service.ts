@@ -13,8 +13,11 @@ export class AccountingStartupCheckService implements OnModuleInit {
     '327',
     '328',
     '391',
+    '501',
     '600',
     '621',
+    '679',
+    '689',
     '770',
   ];
 

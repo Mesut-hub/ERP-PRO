@@ -331,6 +331,9 @@ model Warehouse {
   code             String                    @unique
   name             String
   isActive         Boolean                   @default(true)
+
+  sectorTag        String?                   @db.VarChar(60)
+  
   createdAt        DateTime                  @default(now())
   updatedAt        DateTime                  @updatedAt
   inventoryCosts   InventoryCost[]
@@ -408,11 +411,11 @@ model StockMoveLine {
   unitCostTxn        Decimal? @db.Decimal(18, 6)
   fxRateToTry        Decimal? @db.Decimal(18, 8)
   unitCostBase       Decimal? @db.Decimal(18, 6)
-  
+
   createdAt DateTime  @default(now())
-  move      StockMove @relation(fields: [moveId], references: [id], onDelete: Cascade)
-  product   Product   @relation(fields: [productId], references: [id])
-  unit      Unit      @relation(fields: [unitId], references: [id])
+  move    StockMove @relation(fields: [moveId], references: [id], onDelete: Cascade)
+  product Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  unit    Unit      @relation(fields: [unitId], references: [id], onDelete: Restrict)
 
   @@index([moveId])
   @@index([productId])

@@ -34,7 +34,7 @@ const nav = [
     section: 'Inventory',
     items: [
       { href: '/inventory/moves', label: 'Stock Moves' },
-      { href: '/inventory/stock-valuation', label: 'Stock Valuation' }
+      { href: '/inventory/stock-valuation', label: 'Stock Valuation' },
     ],
   },
   {
@@ -42,6 +42,12 @@ const nav = [
     items: [{ href: '/master-data/exchange-rates', label: 'Exchange Rates' }],
   },
 ];
+
+function abbr(section: string, label: string) {
+  const s = (section.trim()[0] ?? '?').toUpperCase();
+  const l = (label.trim()[0] ?? '?').toUpperCase();
+  return `${s}${l}`;
+}
 
 export function SidebarNav({ collapsed }: { collapsed: boolean }) {
   const pathname = usePathname();
@@ -58,9 +64,11 @@ export function SidebarNav({ collapsed }: { collapsed: boolean }) {
           >
             {g.section}
           </div>
+
           <div className="space-y-1">
             {g.items.map((it) => {
               const active = pathname === it.href;
+
               return (
                 <Link
                   key={it.href}
@@ -68,12 +76,23 @@ export function SidebarNav({ collapsed }: { collapsed: boolean }) {
                   className={cn(
                     'flex items-center gap-2 rounded-md px-2 py-2 text-sm transition-colors',
                     active ? 'bg-muted font-medium' : 'hover:bg-muted/70',
-                    collapsed && 'justify-center',
+                    collapsed && 'justify-center px-0',
                   )}
-                  title={collapsed ? it.label : undefined}
+                  title={`${g.section} • ${it.label}`}
                 >
-                  <span className={cn(collapsed && 'sr-only')}>{it.label}</span>
-                  {collapsed && <span aria-hidden className="text-xs">{it.label.slice(0, 2)}</span>}
+                  {!collapsed ? (
+                    <span>{it.label}</span>
+                  ) : (
+                    <span
+                      aria-hidden
+                      className={cn(
+                        'inline-flex h-7 w-10 items-center justify-center rounded-md border border-border bg-background text-[11px] font-semibold',
+                        active && 'bg-muted',
+                      )}
+                    >
+                      {abbr(g.section, it.label)}
+                    </span>
+                  )}
                 </Link>
               );
             })}
