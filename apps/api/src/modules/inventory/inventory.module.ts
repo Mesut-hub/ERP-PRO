@@ -5,9 +5,10 @@ import { WarehousesController } from './warehouses.controller';
 import { FinanceModule } from '../finance/finance.module';
 import { SequenceModule } from '../common/sequence/sequence.module';
 import { FifoService } from './costing/fifo.service';
+import { AccountingModule } from '../accounting/accounting.module';
 
 @Module({
-  imports: [FinanceModule, SequenceModule],
+  imports: [FinanceModule, SequenceModule, AccountingModule],
   providers: [InventoryService, FifoService],
   controllers: [InventoryController, WarehousesController],
   exports: [InventoryService, FifoService],

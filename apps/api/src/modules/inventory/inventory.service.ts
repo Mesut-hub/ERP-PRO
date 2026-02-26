@@ -12,6 +12,7 @@ import { JwtAccessPayload } from '../../common/types/auth.types';
 import { AuditAction, StockMoveStatus, StockMoveType } from '@prisma/client';
 import { DocNoService } from '../common/sequence/docno.service';
 import { FifoService } from './costing/fifo.service';
+import { AccountingService } from '../accounting/accounting.service';
 
 function isString(x: unknown): x is string {
   return typeof x === 'string' && x.length > 0;
@@ -31,6 +32,7 @@ export class InventoryService {
     private readonly postingLock: PostingLockService,
     private readonly docNo: DocNoService,
     private readonly fifo: FifoService,
+    private readonly accounting: AccountingService,
   ) {}
 
   async listMoves() {
@@ -488,6 +490,199 @@ export class InventoryService {
             fxRateToTry: l.fxRateToTry === null || l.fxRateToTry === undefined ? null : Number(l.fxRateToTry),
           });
         }
+      }
+
+            // =========================
+      // Valuation + Accounting JE (professional)
+      // =========================
+      // Idempotency: if a POSTED JE already exists for this StockMove, do not create another.
+      const existingJe = await (tx as any).journalEntry.findFirst({
+        where: { status: 'POSTED', sourceType: 'StockMove', sourceId: locked.id },
+        select: { id: true },
+      });
+
+      // Build valuation totals (base currency = TRY)
+      let totalInBase = 0;
+      let totalOutBase = 0;
+
+      // A) Inbound valuation from unitCostBase on lines
+      if (locked.type === 'RECEIPT' || (locked.type === 'ADJUSTMENT' && locked.toWarehouseId)) {
+        for (const l of locked.lines as any[]) {
+          const qtyIn = Number(l.quantity);
+          if (!Number.isFinite(qtyIn) || qtyIn <= 0) continue;
+
+          const unitCostBase = Number(l.unitCostBase ?? 0);
+          if (!Number.isFinite(unitCostBase) || unitCostBase <= 0) {
+            throw new BadRequestException(
+              `Missing unitCostBase for inbound move line ${l.id}. Provide unit cost before posting.`,
+            );
+          }
+
+          const amountBase = Math.round((qtyIn * unitCostBase + Number.EPSILON) * 100) / 100;
+          totalInBase += amountBase;
+
+          // Store valuation entry row (audit + reporting)
+          await (tx as any).inventoryValuationEntry.create({
+            data: {
+              productId: l.productId,
+              warehouseId: locked.toWarehouseId!,
+              sourceType: 'StockMove',
+              sourceId: locked.id,
+              sourceLineId: l.id,
+              method: 'FIFO',
+              quantityIn: qtyIn.toFixed(4),
+              quantityOut: '0',
+              amountBase: amountBase.toFixed(2),
+            },
+          });
+        }
+      }
+
+      // B) Outbound valuation from FIFO allocations (consistent with sales delivery costing)
+      if (locked.type === 'ISSUE' || (locked.type === 'ADJUSTMENT' && locked.fromWarehouseId)) {
+        for (const l of locked.lines as any[]) {
+          const qtyOut = Number(l.quantity);
+          if (!Number.isFinite(qtyOut) || qtyOut <= 0) continue;
+
+          const alloc = await this.fifo.allocateOutbound(tx as any, {
+            productId: l.productId,
+            warehouseId: locked.fromWarehouseId!,
+            issueSourceType: 'StockMove',
+            issueSourceId: locked.id,
+            issueSourceLineId: l.id,
+            qtyOut,
+          });
+
+          const amountBase = Math.round((Number(alloc.totalAmountBase ?? 0) + Number.EPSILON) * 100) / 100;
+          totalOutBase += amountBase;
+
+          await (tx as any).inventoryValuationEntry.create({
+            data: {
+              productId: l.productId,
+              warehouseId: locked.fromWarehouseId!,
+              sourceType: 'StockMove',
+              sourceId: locked.id,
+              sourceLineId: l.id,
+              method: 'FIFO',
+              quantityIn: '0',
+              quantityOut: qtyOut.toFixed(4),
+              amountBase: amountBase.toFixed(2),
+            },
+          });
+        }
+      }
+
+      totalInBase = Math.round((totalInBase + Number.EPSILON) * 100) / 100;
+      totalOutBase = Math.round((totalOutBase + Number.EPSILON) * 100) / 100;
+
+      // Create JE only once
+      if (!existingJe && (totalInBase > 0 || totalOutBase > 0)) {
+        const accInv = await tx.account.findUnique({ where: { code: '150' } });
+        const accReceiptClr = await tx.account.findUnique({ where: { code: '501' } });
+        const accAdjGain = await tx.account.findUnique({ where: { code: '679' } });
+        const accAdjLoss = await tx.account.findUnique({ where: { code: '689' } });
+
+        if (!accInv || !accReceiptClr || !accAdjGain || !accAdjLoss) {
+          throw new BadRequestException(
+            'Missing required accounts for StockMove valuation (150, 501, 679, 689). Run seed/migrations.',
+          );
+        }
+
+        const lines: any[] = [];
+
+        // RECEIPT: Dr Inventory / Cr Receipt Clearing
+        if (locked.type === 'RECEIPT' && totalInBase > 0) {
+          lines.push(
+            {
+              accountId: accInv.id,
+              description: `Stock receipt ${locked.documentNo} inventory`,
+              debit: totalInBase.toFixed(2),
+              credit: '0',
+              currencyCode: 'TRY',
+              amountCurrency: totalInBase.toFixed(2),
+            },
+            {
+              accountId: accReceiptClr.id,
+              description: `Stock receipt ${locked.documentNo} clearing`,
+              debit: '0',
+              credit: totalInBase.toFixed(2),
+              currencyCode: 'TRY',
+              amountCurrency: totalInBase.toFixed(2),
+            },
+          );
+        }
+
+        // ADJUSTMENT IN: Dr Inventory / Cr Adjustment Gain
+        if (locked.type === 'ADJUSTMENT' && locked.toWarehouseId && totalInBase > 0) {
+          lines.push(
+            {
+              accountId: accInv.id,
+              description: `Stock adjustment IN ${locked.documentNo} inventory`,
+              debit: totalInBase.toFixed(2),
+              credit: '0',
+              currencyCode: 'TRY',
+              amountCurrency: totalInBase.toFixed(2),
+            },
+            {
+              accountId: accAdjGain.id,
+              description: `Stock adjustment IN ${locked.documentNo} gain`,
+              debit: '0',
+              credit: totalInBase.toFixed(2),
+              currencyCode: 'TRY',
+              amountCurrency: totalInBase.toFixed(2),
+            },
+          );
+        }
+
+        // ISSUE: Dr Receipt Clearing (placeholder offset) / Cr Inventory
+        // ADJUSTMENT OUT: Dr Adjustment Loss / Cr Inventory
+        if ((locked.type === 'ISSUE' || (locked.type === 'ADJUSTMENT' && locked.fromWarehouseId)) && totalOutBase > 0) {
+          const debitAccId = locked.type === 'ADJUSTMENT' ? accAdjLoss.id : accReceiptClr.id;
+
+          lines.push(
+            {
+              accountId: debitAccId,
+              description: `${locked.type} ${locked.documentNo} offset`,
+              debit: totalOutBase.toFixed(2),
+              credit: '0',
+              currencyCode: 'TRY',
+              amountCurrency: totalOutBase.toFixed(2),
+            },
+            {
+              accountId: accInv.id,
+              description: `${locked.type} ${locked.documentNo} inventory`,
+              debit: '0',
+              credit: totalOutBase.toFixed(2),
+              currencyCode: 'TRY',
+              amountCurrency: totalOutBase.toFixed(2),
+            },
+          );
+        }
+
+        // Balance guard
+        const dr = lines.reduce((s, l) => s + Number(l.debit), 0);
+        const cr = lines.reduce((s, l) => s + Number(l.credit), 0);
+        if (Math.abs(dr - cr) > 0.005) {
+          throw new BadRequestException('StockMove valuation JE not balanced');
+        }
+
+        // Centralized JE creation (already posts)
+        const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+          documentDate: locked.documentDate,
+          description: `StockMove valuation ${locked.documentNo} (${locked.type})`,
+          sourceType: 'StockMove',
+          sourceId: locked.id,
+          lines,
+        });
+
+        await this.audit.log({
+          actorId: actor.sub,
+          action: AuditAction.POST,
+          entity: 'StockMove',
+          entityId: locked.id,
+          after: { journalEntryId: je.id, totalInBase: totalInBase.toFixed(2), totalOutBase: totalOutBase.toFixed(2) },
+          message: `Created valuation JE for stock move ${locked.documentNo}`,
+        });
       }
 
       const updated = await tx.stockMove.update({

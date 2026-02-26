@@ -39,7 +39,11 @@ const nav = [
   },
   {
     section: 'Master Data',
-    items: [{ href: '/master-data/exchange-rates', label: 'Exchange Rates' }],
+    items: [
+      { href: '/master-data/warehouses', label: 'Warehouses' },
+      { href: '/master-data/products', label: 'Products' },
+      { href: '/master-data/exchange-rates', label: 'Exchange Rates' }
+    ],
   },
 ];
 

@@ -145,6 +145,7 @@ async function main() {
     'inv.move.cancel',
     'inv.move.reverse',
     'inv.warehouse.read',
+    'inv.warehouse.manage',
 
     'pur.po.manage',
     'pur.po.approve',
