@@ -16,14 +16,49 @@ export class SequenceService {
   }
 
   /**
-   * Atomic increment. Returns the allocated number.
-   * periodMode = 'DAY' gives periodKey=YYYYMMDD (recommended for your current formats)
+   * Transaction-safe allocator (caller provides tx).
+   * This is the "core" implementation used by next() and DocNoService.allocateTx().
    */
-  async next(sequenceCode: string, documentDate: Date, granularity: 'DAY' | 'MONTH' | 'YEAR') {
+  async nextTx(tx: any, sequenceCode: string, documentDate: Date, granularity: 'DAY' | 'MONTH' | 'YEAR') {
     const code = (sequenceCode ?? '').trim().toUpperCase();
     if (!code) throw new Error('sequenceCode is required');
 
     const key = this.periodKey(documentDate, granularity);
+
+    // Ensure row exists
+    await tx.documentSequence.upsert({
+      where: { sequenceCode_periodKey: { sequenceCode: code, periodKey: key } },
+      update: {},
+      create: { sequenceCode: code, periodKey: key, nextNumber: 1 },
+    });
+
+    // Lock row FOR UPDATE
+    const rows: Array<{ id: string; nextNumber: number }> = await tx.$queryRawUnsafe(
+      `SELECT "id", "nextNumber" FROM "DocumentSequence" WHERE "sequenceCode" = $1 AND "periodKey" = $2 FOR UPDATE`,
+      code,
+      key,
+    );
+    if (!rows.length) throw new Error('DocumentSequence row missing after upsert');
+
+    const current = rows[0].nextNumber;
+
+    await tx.documentSequence.update({
+      where: { id: rows[0].id },
+      data: { nextNumber: current + 1 },
+    });
+
+    return current;
+  }
+
+  /**
+   * Atomic increment. Returns the allocated number.
+   * periodMode = 'DAY' gives periodKey=YYYYMMDD (recommended for your current formats)
+   */
+  async next(sequenceCode: string, documentDate: Date, granularity: 'DAY' | 'MONTH' | 'YEAR') {
+    //const code = (sequenceCode ?? '').trim().toUpperCase();
+    //if (!code) throw new Error('sequenceCode is required');
+
+    //const key = this.periodKey(documentDate, granularity);
 
     // Very strong safety: retry a few times if a concurrent transaction causes a unique conflict
     // (should be rare with row locking, but makes it bulletproof).
@@ -32,8 +67,9 @@ export class SequenceService {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         return await this.prisma.$transaction(async (tx) => {
+          return this.nextTx(tx, sequenceCode, documentDate, granularity);
           // 1) Ensure row exists (upsert)
-          await tx.documentSequence.upsert({
+          /*await tx.documentSequence.upsert({
             where: { sequenceCode_periodKey: { sequenceCode: code, periodKey: key } },
             update: {},
             create: { sequenceCode: code, periodKey: key, nextNumber: 1 },
@@ -59,7 +95,7 @@ export class SequenceService {
           });
 
           // allocated number is the value we used
-          return current;
+          return current;*/
         });
       } catch (e: any) {
         // Prisma unique conflict code
@@ -69,6 +105,7 @@ export class SequenceService {
     }
 
     // Should never hit
-    throw new Error(`Failed to allocate sequence for ${sequenceCode}/${key}`);
+    //throw new Error(`Failed to allocate sequence for ${sequenceCode}/${key}`);
+    throw new Error(`Failed to allocate sequence for ${sequenceCode}`);
   }
 }

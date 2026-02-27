@@ -21,8 +21,8 @@ export class AccountingService {
   }
 
   private validateBalanced(lines: Array<{ debit: string; credit: string }>) {
-    const debit = lines.reduce((s, l) => s + Number(l.debit), 0);
-    const credit = lines.reduce((s, l) => s + Number(l.credit), 0);
+    const debit = lines.reduce((s, l) => s + Number(l.debit ?? 0), 0);
+    const credit = lines.reduce((s, l) => s + Number(l.credit ?? 0), 0);
     if (Math.abs(debit - credit) > 0.005) {
       throw new BadRequestException(`Journal not balanced. debit=${debit}, credit=${credit}`);
     }
@@ -226,6 +226,60 @@ export class AccountingService {
     };
   }
 
+  async createPostedFromIntegrationTx(
+    tx: any,
+    actorId: string,
+    input: {
+      documentDate: Date;
+      description: string;
+      sourceType: string;
+      sourceId: string;
+      lines: Array<{
+        accountId: string;
+        partyId?: string | null;
+        description?: string;
+        debit: string;
+        credit: string;
+        currencyCode?: string | null;
+        amountCurrency?: string | null;
+      }>;
+    },
+  ) {
+    if (!input.lines || input.lines.length < 2)
+      throw new BadRequestException('Journal must have at least 2 lines');
+    this.validateBalanced(input.lines);
+
+    const docNo = await this.docNo.allocateTx(tx, 'JE', input.documentDate);
+
+    const je = await tx.journalEntry.create({
+      data: {
+        status: 'POSTED',
+        documentNo: docNo,
+        documentDate: input.documentDate,
+        description: input.description,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        createdById: actorId,
+        postedById: actorId,
+        postedAt: new Date(),
+        lines: { create: input.lines.map((l) => ({ ...l, partyId: l.partyId ?? null })) },
+      },
+    });
+
+    // Note: This audit log is not inside tx. If you want 100% atomic audit too,
+    // we can add AuditService.logTx(tx, ...) later.
+    await this.audit.log({
+      actorId,
+      action: AuditAction.POST,
+      entity: 'JournalEntry',
+      entityId: je.id,
+      after: { documentNo: je.documentNo, sourceType: je.sourceType, sourceId: je.sourceId },
+      message: `Auto-posted JE ${je.documentNo} from ${input.sourceType}`,
+    });
+
+    return je;
+  }
+
   /**
    * Centralized integration helper (Purchasing/Sales/Payments should use this).
    * Creates a JE already POSTED and returns it.
@@ -248,36 +302,8 @@ export class AccountingService {
       }>;
     },
   ) {
-    if (!input.lines || input.lines.length < 2)
-      throw new BadRequestException('Journal must have at least 2 lines');
-    this.validateBalanced(input.lines);
-
-    const docNo = await this.docNo.allocate('JE', input.documentDate);
-
-    const je = await this.prisma.journalEntry.create({
-      data: {
-        status: 'POSTED',
-        documentNo: docNo,
-        documentDate: input.documentDate,
-        description: input.description,
-        sourceType: input.sourceType,
-        sourceId: input.sourceId,
-        createdById: actorId,
-        postedById: actorId,
-        postedAt: new Date(),
-        lines: { create: input.lines.map((l) => ({ ...l, partyId: l.partyId ?? null })) },
-      },
+    return this.prisma.$transaction(async (tx) => {
+      return this.createPostedFromIntegrationTx(tx, actorId, input);
     });
-
-    await this.audit.log({
-      actorId,
-      action: AuditAction.POST,
-      entity: 'JournalEntry',
-      entityId: je.id,
-      after: { documentNo: je.documentNo, sourceType: je.sourceType, sourceId: je.sourceId },
-      message: `Auto-posted JE ${je.documentNo} from ${input.sourceType}`,
-    });
-
-    return je;
   }
 }

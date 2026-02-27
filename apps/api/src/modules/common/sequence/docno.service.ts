@@ -10,4 +10,9 @@ export class DocNoService {
     const n = await this.seq.next(code, documentDate, 'DAY');
     return buildDocNo(code, documentDate, n);
   }
+
+  async allocateTx(tx: any, code: string, documentDate: Date) {
+    const n = await this.seq.nextTx(tx, code, documentDate, 'DAY');
+    return buildDocNo(code, documentDate, n);
+  }
 }

@@ -42,7 +42,8 @@ const nav = [
     items: [
       { href: '/master-data/warehouses', label: 'Warehouses' },
       { href: '/master-data/products', label: 'Products' },
-      { href: '/master-data/exchange-rates', label: 'Exchange Rates' }
+      { href: '/master-data/exchange-rates', label: 'Exchange Rates' },
+      { href: '/master-data/product-categories', label: 'Product Categories' }
     ],
   },
 ];

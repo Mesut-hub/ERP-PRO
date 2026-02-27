@@ -108,13 +108,18 @@ export class InventoryService {
           throw new BadRequestException('Inbound move lines require unitCostBase > 0');
         }
 
-        const ccy = isString(l.sourceCurrencyCode) ? String(l.sourceCurrencyCode).toUpperCase().trim() : '';
+        const ccy = isString(l.sourceCurrencyCode)
+          ? String(l.sourceCurrencyCode).toUpperCase().trim()
+          : '';
         if (ccy) {
-          if (ccy.length !== 3) throw new BadRequestException('sourceCurrencyCode must be 3 letters');
+          if (ccy.length !== 3)
+            throw new BadRequestException('sourceCurrencyCode must be 3 letters');
           const unitCostTxn = numOrNaN(l.unitCostTxn);
           const fx = numOrNaN(l.fxRateToTry);
           if (!Number.isFinite(unitCostTxn) || unitCostTxn <= 0) {
-            throw new BadRequestException('unitCostTxn must be > 0 when sourceCurrencyCode is provided');
+            throw new BadRequestException(
+              'unitCostTxn must be > 0 when sourceCurrencyCode is provided',
+            );
           }
           if (!Number.isFinite(fx) || fx <= 0) {
             throw new BadRequestException('fxRateToTry must be > 0 when sourceCurrencyCode is provided');
@@ -344,7 +349,8 @@ export class InventoryService {
   }
 
   private async assertSufficientStock(warehouseId: string, productId: string, requiredOut: number) {
-    const allowNegative = (this.config.get<string>('ALLOW_NEGATIVE_STOCK') ?? 'false') === 'true';
+    const allowNegative =
+      (this.config.get<string>('ALLOW_NEGATIVE_STOCK') ?? 'false') === 'true';
     if (allowNegative) return;
 
     const sums = await this.prisma.stockLedgerEntry.aggregate({
@@ -459,7 +465,6 @@ export class InventoryService {
 
       await tx.stockLedgerEntry.createMany({ data: ledgerCreates });
 
-      // ✅ EXACT PLACE: after ledger entries are created, before move is marked POSTED
       // Create FIFO inbound layers for valued inbound moves.
       if (locked.type === 'RECEIPT' || (locked.type === 'ADJUSTMENT' && locked.toWarehouseId)) {
         const inboundWarehouseId = locked.toWarehouseId!;
@@ -486,22 +491,22 @@ export class InventoryService {
             unitCostBase,
 
             sourceCurrencyCode: l.sourceCurrencyCode ?? null,
-            unitCostTxn: l.unitCostTxn === null || l.unitCostTxn === undefined ? null : Number(l.unitCostTxn),
-            fxRateToTry: l.fxRateToTry === null || l.fxRateToTry === undefined ? null : Number(l.fxRateToTry),
+            unitCostTxn:
+              l.unitCostTxn === null || l.unitCostTxn === undefined ? null : Number(l.unitCostTxn),
+            fxRateToTry:
+              l.fxRateToTry === null || l.fxRateToTry === undefined ? null : Number(l.fxRateToTry),
           });
         }
       }
 
-            // =========================
-      // Valuation + Accounting JE (professional)
       // =========================
-      // Idempotency: if a POSTED JE already exists for this StockMove, do not create another.
+      // Valuation + Accounting JE (atomic)
+      // =========================
       const existingJe = await (tx as any).journalEntry.findFirst({
         where: { status: 'POSTED', sourceType: 'StockMove', sourceId: locked.id },
         select: { id: true },
       });
 
-      // Build valuation totals (base currency = TRY)
       let totalInBase = 0;
       let totalOutBase = 0;
 
@@ -521,7 +526,6 @@ export class InventoryService {
           const amountBase = Math.round((qtyIn * unitCostBase + Number.EPSILON) * 100) / 100;
           totalInBase += amountBase;
 
-          // Store valuation entry row (audit + reporting)
           await (tx as any).inventoryValuationEntry.create({
             data: {
               productId: l.productId,
@@ -538,7 +542,7 @@ export class InventoryService {
         }
       }
 
-      // B) Outbound valuation from FIFO allocations (consistent with sales delivery costing)
+      // B) Outbound valuation from FIFO allocations
       if (locked.type === 'ISSUE' || (locked.type === 'ADJUSTMENT' && locked.fromWarehouseId)) {
         for (const l of locked.lines as any[]) {
           const qtyOut = Number(l.quantity);
@@ -553,7 +557,8 @@ export class InventoryService {
             qtyOut,
           });
 
-          const amountBase = Math.round((Number(alloc.totalAmountBase ?? 0) + Number.EPSILON) * 100) / 100;
+          const amountBase =
+            Math.round((Number(alloc.totalAmountBase ?? 0) + Number.EPSILON) * 100) / 100;
           totalOutBase += amountBase;
 
           await (tx as any).inventoryValuationEntry.create({
@@ -575,22 +580,23 @@ export class InventoryService {
       totalInBase = Math.round((totalInBase + Number.EPSILON) * 100) / 100;
       totalOutBase = Math.round((totalOutBase + Number.EPSILON) * 100) / 100;
 
-      // Create JE only once
       if (!existingJe && (totalInBase > 0 || totalOutBase > 0)) {
         const accInv = await tx.account.findUnique({ where: { code: '150' } });
-        const accReceiptClr = await tx.account.findUnique({ where: { code: '501' } });
+
+        // ✅ professional consistency: use GRNI clearing account = 327 (matches your startup check)
+        const accReceiptClr = await tx.account.findUnique({ where: { code: '327' } });
+
         const accAdjGain = await tx.account.findUnique({ where: { code: '679' } });
         const accAdjLoss = await tx.account.findUnique({ where: { code: '689' } });
 
         if (!accInv || !accReceiptClr || !accAdjGain || !accAdjLoss) {
           throw new BadRequestException(
-            'Missing required accounts for StockMove valuation (150, 501, 679, 689). Run seed/migrations.',
+            'Missing required accounts for StockMove valuation (150, 327, 679, 689). Fix seed/accounts.',
           );
         }
 
         const lines: any[] = [];
 
-        // RECEIPT: Dr Inventory / Cr Receipt Clearing
         if (locked.type === 'RECEIPT' && totalInBase > 0) {
           lines.push(
             {
@@ -612,7 +618,6 @@ export class InventoryService {
           );
         }
 
-        // ADJUSTMENT IN: Dr Inventory / Cr Adjustment Gain
         if (locked.type === 'ADJUSTMENT' && locked.toWarehouseId && totalInBase > 0) {
           lines.push(
             {
@@ -634,9 +639,10 @@ export class InventoryService {
           );
         }
 
-        // ISSUE: Dr Receipt Clearing (placeholder offset) / Cr Inventory
-        // ADJUSTMENT OUT: Dr Adjustment Loss / Cr Inventory
-        if ((locked.type === 'ISSUE' || (locked.type === 'ADJUSTMENT' && locked.fromWarehouseId)) && totalOutBase > 0) {
+        if (
+          (locked.type === 'ISSUE' || (locked.type === 'ADJUSTMENT' && locked.fromWarehouseId)) &&
+          totalOutBase > 0
+        ) {
           const debitAccId = locked.type === 'ADJUSTMENT' ? accAdjLoss.id : accReceiptClr.id;
 
           lines.push(
@@ -659,15 +665,14 @@ export class InventoryService {
           );
         }
 
-        // Balance guard
         const dr = lines.reduce((s, l) => s + Number(l.debit), 0);
         const cr = lines.reduce((s, l) => s + Number(l.credit), 0);
         if (Math.abs(dr - cr) > 0.005) {
           throw new BadRequestException('StockMove valuation JE not balanced');
         }
 
-        // Centralized JE creation (already posts)
-        const je = await this.accounting.createPostedFromIntegration(actor.sub, {
+        // ✅ ATOMIC: create JE within same tx
+        const je = await this.accounting.createPostedFromIntegrationTx(tx, actor.sub, {
           documentDate: locked.documentDate,
           description: `StockMove valuation ${locked.documentNo} (${locked.type})`,
           sourceType: 'StockMove',
@@ -680,7 +685,11 @@ export class InventoryService {
           action: AuditAction.POST,
           entity: 'StockMove',
           entityId: locked.id,
-          after: { journalEntryId: je.id, totalInBase: totalInBase.toFixed(2), totalOutBase: totalOutBase.toFixed(2) },
+          after: {
+            journalEntryId: je.id,
+            totalInBase: totalInBase.toFixed(2),
+            totalOutBase: totalOutBase.toFixed(2),
+          },
           message: `Created valuation JE for stock move ${locked.documentNo}`,
         });
       }

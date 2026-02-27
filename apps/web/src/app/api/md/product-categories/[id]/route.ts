@@ -3,8 +3,7 @@ import { NextResponse } from 'next/server';
 const API_BASE = process.env.API_BASE_URL ?? 'http://localhost:3001';
 
 async function forward(req: Request, path: string) {
-  const url = `${API_BASE}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: req.method,
     headers: {
       'content-type': req.headers.get('content-type') ?? 'application/json',
@@ -15,7 +14,6 @@ async function forward(req: Request, path: string) {
     cache: 'no-store',
   });
 
-  // Forward status + body as-is (so UI sees real error message)
   const text = await res.text();
   return new NextResponse(text, {
     status: res.status,
@@ -23,10 +21,7 @@ async function forward(req: Request, path: string) {
   });
 }
 
-export async function GET(req: Request) {
-  return forward(req, '/md/products');
-}
-
-export async function POST(req: Request) {
-  return forward(req, '/md/products');
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  return forward(req, `/md/product-categories/${encodeURIComponent(id)}`);
 }

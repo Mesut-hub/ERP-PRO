@@ -15,7 +15,6 @@ async function forward(req: Request, path: string) {
     cache: 'no-store',
   });
 
-  // Forward status + body as-is (so UI sees real error message)
   const text = await res.text();
   return new NextResponse(text, {
     status: res.status,
@@ -23,10 +22,7 @@ async function forward(req: Request, path: string) {
   });
 }
 
-export async function GET(req: Request) {
-  return forward(req, '/md/products');
-}
-
-export async function POST(req: Request) {
-  return forward(req, '/md/products');
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  return forward(req, `/md/products/${encodeURIComponent(id)}`);
 }
