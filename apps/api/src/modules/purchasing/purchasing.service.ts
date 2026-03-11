@@ -50,6 +50,11 @@ export class PurchasingService {
     return lines.reduce((s, l) => s + Number(l.lineSubtotal ?? 0), 0);
   }
 
+  private roundToBaseCurrency(amount: number, rate: number): number {
+    return Math.round((amount * rate + Number.EPSILON) * 100) / 100;
+  }
+
+
   private async ensureScnPurchaseReturnClearingJe(params: {
     actorId: string;
     scnId: string;
@@ -402,6 +407,9 @@ export class PurchasingService {
       const accInv = await this.getAccountByCode('150');
       const accGrni = await this.getAccountByCode('327');
 
+      // Convert to base TRY for debit/credit
+      const netBase = this.roundToBaseCurrency(net, rateToTry);
+
       const je = await this.accounting.createPostedFromIntegration(actor.sub, {
         documentDate: receipt.documentDate,
         description: `GRNI accrual for receipt ${receipt.documentNo} (PO ${po.documentNo})`,
@@ -412,7 +420,7 @@ export class PurchasingService {
             accountId: accInv.id,
             partyId: po.supplierId,
             description: `GRN ${receipt.documentNo} Inventory receipt`,
-            debit: net.toFixed(2),
+            debit: netBase.toFixed(2),
             credit: '0',
             currencyCode: po.currencyCode,
             amountCurrency: net.toFixed(2),
@@ -422,7 +430,7 @@ export class PurchasingService {
             partyId: po.supplierId,
             description: `GRN ${receipt.documentNo} GRNI accrual`,
             debit: '0',
-            credit: net.toFixed(2),
+            credit: netBase.toFixed(2),
             currencyCode: po.currencyCode,
             amountCurrency: net.toFixed(2),
           },
@@ -831,6 +839,26 @@ export class PurchasingService {
     return this.fx.getRate(cur, 'TRY', postingDate);
   }
 
+  private async getRateToTryForInvoice(
+    invCurrency: string,
+    invExchangeRateToBase: any,
+    invDocumentDate: Date,
+  ): Promise<number> {
+    const cur = invCurrency.toUpperCase();
+    if (cur === 'TRY') return 1;
+
+    // If invoice has an explicit exchangeRateToBase, use it
+    if (invExchangeRateToBase !== null && invExchangeRateToBase !== undefined) {
+      const r = Number(invExchangeRateToBase);
+      if (!Number.isFinite(r) || r <= 0)
+        throw new BadRequestException('Invalid exchangeRateToBase on Invoice');
+      return r;
+    }
+
+    // Otherwise pull CBRT daily rate
+    return this.fx.getRate(cur, 'TRY', invDocumentDate);
+  }
+
   async createSupplierInvoice(actorId: string, dto: any) {
     if (!dto.lines || dto.lines.length === 0)
       throw new BadRequestException('Invoice must have lines');
@@ -1099,6 +1127,18 @@ export class PurchasingService {
     const vat = inv.lines.reduce((s, l) => s + Number(l.lineVat), 0);
     const total = inv.lines.reduce((s, l) => s + Number(l.lineTotal), 0);
 
+    // Get FX rate to convert to base TRY
+    const rateToTry = await this.getRateToTryForInvoice(
+      inv.currencyCode,
+      inv.exchangeRateToBase,
+      inv.documentDate,
+    );
+
+    // Convert to base TRY amounts
+    const netBase = this.roundToBaseCurrency(net, rateToTry);
+    const vatBase = this.roundToBaseCurrency(vat, rateToTry);
+    const totalBase = this.roundToBaseCurrency(total, rateToTry);
+
     const accAP = await this.getAccountByCode('320');
     const accVatIn = await this.getAccountByCode('191');
     const accExp = await this.getAccountByCode('770');
@@ -1118,7 +1158,7 @@ export class PurchasingService {
           accountId: accGrni.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} GRNI clearing`,
-          debit: net.toFixed(2),
+          debit: netBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
           amountCurrency: net.toFixed(2),
@@ -1127,7 +1167,7 @@ export class PurchasingService {
           accountId: accVatIn.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
-          debit: vat.toFixed(2),
+          debit: vatBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
           amountCurrency: vat.toFixed(2),
@@ -1137,7 +1177,7 @@ export class PurchasingService {
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP`,
           debit: '0',
-          credit: total.toFixed(2),
+          credit: totalBase.toFixed(2),
           currencyCode: inv.currencyCode,
           amountCurrency: total.toFixed(2),
         });
@@ -1147,7 +1187,7 @@ export class PurchasingService {
           accountId: accAP.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP reversal`,
-          debit: total.toFixed(2),
+          debit: totalBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
           amountCurrency: total.toFixed(2),
@@ -1157,7 +1197,7 @@ export class PurchasingService {
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} GRNI reversal`,
           debit: '0',
-          credit: net.toFixed(2),
+          credit: netBase.toFixed(2),
           currencyCode: inv.currencyCode,
           amountCurrency: net.toFixed(2),
         });
@@ -1166,7 +1206,7 @@ export class PurchasingService {
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} VAT reversal`,
           debit: '0',
-          credit: vat.toFixed(2),
+          credit: vatBase.toFixed(2),
           currencyCode: inv.currencyCode,
           amountCurrency: vat.toFixed(2),
         });
@@ -1178,7 +1218,7 @@ export class PurchasingService {
           accountId: accExp.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Expense`,
-          debit: net.toFixed(2),
+          debit: netBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
           amountCurrency: net.toFixed(2),
@@ -1187,7 +1227,7 @@ export class PurchasingService {
           accountId: accVatIn.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Deductible VAT`,
-          debit: vat.toFixed(2),
+          debit: vatBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
           amountCurrency: vat.toFixed(2),
@@ -1197,7 +1237,7 @@ export class PurchasingService {
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP`,
           debit: '0',
-          credit: total.toFixed(2),
+          credit: totalBase.toFixed(2),
           currencyCode: inv.currencyCode,
           amountCurrency: total.toFixed(2),
         });
@@ -1206,7 +1246,7 @@ export class PurchasingService {
           accountId: accAP.id,
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} AP reversal`,
-          debit: total.toFixed(2),
+          debit: totalBase.toFixed(2),
           credit: '0',
           currencyCode: inv.currencyCode,
           amountCurrency: total.toFixed(2),
@@ -1216,7 +1256,7 @@ export class PurchasingService {
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} Expense reversal`,
           debit: '0',
-          credit: net.toFixed(2),
+          credit: netBase.toFixed(2),
           currencyCode: inv.currencyCode,
           amountCurrency: net.toFixed(2),
         });
@@ -1225,7 +1265,7 @@ export class PurchasingService {
           partyId: inv.supplierId,
           description: `${inv.kind} ${inv.documentNo} VAT reversal`,
           debit: '0',
-          credit: vat.toFixed(2),
+          credit: vatBase.toFixed(2),
           currencyCode: inv.currencyCode,
           amountCurrency: vat.toFixed(2),
         });
